@@ -20,6 +20,7 @@ public partial class Game
 
     private int _waitingTicksRemaining;
     private int _strategyTicksRemaining;
+    private bool _settlementProcessed;
     private readonly Dictionary<string, bool> _playerStrategySelected = new();
 
     public Game(GameSettings settings)
@@ -136,13 +137,20 @@ public partial class Game
 
     private void TickSettlement()
     {
-        // Calculate NAV and determine the day's winner.
-        if (CurrentTradingDay != null)
+        if (!_settlementProcessed)
         {
-            var navs = CurrentTradingDay.CalculateSettlement();
-            DetermineRoundWinner(navs);
+            // First tick in Settlement: calculate NAV and determine the day's winner.
+            if (CurrentTradingDay != null)
+            {
+                var navs = CurrentTradingDay.CalculateSettlement();
+                DetermineRoundWinner(navs);
+            }
+            _settlementProcessed = true;
+            return; // Stay in Settlement for one tick so clients can see the results
         }
 
+        // Second tick: transition out
+        _settlementProcessed = false;
         if (CurrentDayNumber >= _settings.TradingDayCount)
         {
             Stage = GameStage.Finished;

@@ -14,6 +14,12 @@ public class ResearchReport
     /// </summary>
     public double DecayMultiplier { get; init; } = 1.0;
 
+    /// <summary>
+    /// The effective research window used for this report's time decay calculation.
+    /// Default 50; extended to 80 for quant cluster players.
+    /// </summary>
+    public int EffectiveWindow { get; init; } = 50;
+
     public bool? IsCorrect { get; set; }
     public long Reward { get; set; }
 }

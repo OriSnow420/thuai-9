@@ -13,6 +13,7 @@ using Thuai.GameLogic.StrategyCards;
 /// </summary>
 public class TradingDay
 {
+    private readonly object _lock = new();
     private readonly int _maxTicks;
     private readonly long _initialGoldPrice;
     private readonly Dictionary<string, Player> _players;
@@ -152,6 +153,8 @@ public class TradingDay
     /// </summary>
     public void Tick()
     {
+        lock (_lock)
+        {
         _currentTick++;
 
         if (_currentTick > _maxTicks)
@@ -215,6 +218,7 @@ public class TradingDay
         {
             _isFinished = true;
         }
+        } // end lock
     }
 
     // =========================================================================
@@ -227,6 +231,8 @@ public class TradingDay
     /// </summary>
     public bool HandleLimitBuy(string playerToken, long price, int quantity)
     {
+        lock (_lock)
+        {
         if (_isFinished) return false;
         if (IsCircuitBreakerActive()) return false;
         if (!_players.TryGetValue(playerToken, out var player)) return false;
@@ -234,14 +240,13 @@ public class TradingDay
         bool isIceberg = player.ActiveCards.Any(c => c is IcebergOrder);
         var order = _matchEngine.SubmitOrder(playerToken, OrderSide.Buy, price, quantity, _currentTick, isIceberg);
         return order != null;
+        }
     }
 
-    /// <summary>
-    /// Submit a limit sell order for the player.
-    /// Returns true if the order was accepted, false otherwise.
-    /// </summary>
     public bool HandleLimitSell(string playerToken, long price, int quantity)
     {
+        lock (_lock)
+        {
         if (_isFinished) return false;
         if (IsCircuitBreakerActive()) return false;
         if (!_players.TryGetValue(playerToken, out var player)) return false;
@@ -249,23 +254,22 @@ public class TradingDay
         bool isIceberg = player.ActiveCards.Any(c => c is IcebergOrder);
         var order = _matchEngine.SubmitOrder(playerToken, OrderSide.Sell, price, quantity, _currentTick, isIceberg);
         return order != null;
+        }
     }
 
-    /// <summary>
-    /// Cancel a pending order. Allowed even during circuit breaker.
-    /// </summary>
     public bool HandleCancelOrder(string playerToken, long orderId)
     {
+        lock (_lock)
+        {
         if (_isFinished) return false;
         return _matchEngine.CancelOrder(playerToken, orderId);
+        }
     }
 
-    /// <summary>
-    /// Submit a research report predicting the price direction after a news event.
-    /// Respects per-tick report limits and quant cluster extended windows.
-    /// </summary>
     public bool HandleSubmitReport(string playerToken, int newsId, Prediction prediction)
     {
+        lock (_lock)
+        {
         if (_isFinished) return false;
         if (!_players.TryGetValue(playerToken, out var player)) return false;
         if (!player.CanSubmitReport()) return false;
@@ -287,15 +291,13 @@ public class TradingDay
             return true;
         }
         return false;
+        }
     }
 
-    /// <summary>
-    /// Activate a strategy card skill. Each card type has its own activation logic.
-    /// Returns true if the skill was successfully activated.
-    /// </summary>
-    /// <param name="direction">Optional direction for dark pool trading: "buy" or "sell".</param>
     public bool HandleActivateSkill(string playerToken, string skillName, string? direction = null)
     {
+        lock (_lock)
+        {
         if (_isFinished) return false;
         if (!_players.TryGetValue(playerToken, out var player)) return false;
 
@@ -317,6 +319,7 @@ public class TradingDay
             SentimentManipulation sm => ActivateSentimentManipulation(player, sm),
             _ => ActivateGeneric(player, card)
         };
+        } // end lock
     }
 
     // =========================================================================

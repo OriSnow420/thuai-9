@@ -167,29 +167,51 @@ public class Program
             var day = game.CurrentTradingDay;
             var orderBook = day.OrderBook;
 
-            // Market state (public)
-            var marketState = new MarketStateMessage
+            // Build base market data
+            var baseBids = orderBook.GetVisibleBids().Select(l => new PriceLevel
             {
-                Bids = orderBook.GetVisibleBids().Select(l => new PriceLevel
-                {
-                    Price = l.Price,
-                    Quantity = l.Quantity
-                }).ToList(),
-                Asks = orderBook.GetVisibleAsks().Select(l => new PriceLevel
-                {
-                    Price = l.Price,
-                    Quantity = l.Quantity
-                }).ToList(),
-                LastPrice = orderBook.LastPrice,
-                MidPrice = orderBook.MidPrice,
-                Volume = orderBook.TotalVolume,
-                Tick = day.CurrentTick
-            };
-            agentServer.PublishToAll(marketState);
+                Price = l.Price,
+                Quantity = l.Quantity
+            }).ToList();
+            var baseAsks = orderBook.GetVisibleAsks().Select(l => new PriceLevel
+            {
+                Price = l.Price,
+                Quantity = l.Quantity
+            }).ToList();
 
-            // Per-player private state
+            // Pre-compute fake sell levels by owner for malicious shorting
+            var fakeLevelsByOwner = day.FakeSellLevels
+                .GroupBy(f => f.OwnerToken)
+                .ToDictionary(g => g.Key, g => g.Select(f => new PriceLevel
+                {
+                    Price = f.Price,
+                    Quantity = f.Quantity
+                }).ToList());
+
+            // Per-player: market state (with possible fake levels) + private state
             foreach (var player in game.Players.Values)
             {
+                // Build per-player asks (merge fake sell levels from opponents)
+                var playerAsks = new List<PriceLevel>(baseAsks);
+                foreach (var (ownerToken, fakeLevels) in fakeLevelsByOwner)
+                {
+                    if (ownerToken != player.Token)
+                        playerAsks.AddRange(fakeLevels);
+                }
+                if (playerAsks.Count != baseAsks.Count)
+                    playerAsks.Sort((a, b) => a.Price.CompareTo(b.Price));
+
+                var marketState = new MarketStateMessage
+                {
+                    Bids = baseBids,
+                    Asks = playerAsks,
+                    LastPrice = orderBook.LastPrice,
+                    MidPrice = orderBook.MidPrice,
+                    Volume = orderBook.TotalVolume,
+                    Tick = day.CurrentTick
+                };
+                agentServer.Publish(marketState, player.Token);
+
                 var pendingOrders = day.GetPlayerPendingOrders(player.Token);
                 var playerState = new PlayerStateMessage
                 {
@@ -225,60 +247,7 @@ public class Program
                 agentServer.Publish(previewMsg, playerToken);
             }
 
-            // Malicious shorting: merge fake sell levels into the market view for opponents.
-            if (day.FakeSellLevels.Count > 0)
-            {
-                // Determine which players are affected by fake sell levels.
-                // Each fake level has an OwnerToken; the opponent(s) see the fakes.
-                var fakeLevelsByOwner = day.FakeSellLevels
-                    .GroupBy(f => f.OwnerToken)
-                    .ToDictionary(g => g.Key, g => g.Select(f => new PriceLevel
-                    {
-                        Price = f.Price,
-                        Quantity = f.Quantity
-                    }).ToList());
-
-                foreach (var player in game.Players.Values)
-                {
-                    // Collect fake levels from all OTHER players' malicious shorting.
-                    var fakeAsks = new List<PriceLevel>();
-                    foreach (var (ownerToken, levels) in fakeLevelsByOwner)
-                    {
-                        if (ownerToken != player.Token)
-                        {
-                            fakeAsks.AddRange(levels);
-                        }
-                    }
-
-                    if (fakeAsks.Count > 0)
-                    {
-                        // Merge real asks with fakes and re-sort by price ascending.
-                        var realAsks = orderBook.GetVisibleAsks().Select(l => new PriceLevel
-                        {
-                            Price = l.Price,
-                            Quantity = l.Quantity
-                        }).ToList();
-
-                        realAsks.AddRange(fakeAsks);
-                        realAsks.Sort((a, b) => a.Price.CompareTo(b.Price));
-
-                        var taintedMarket = new MarketStateMessage
-                        {
-                            Bids = orderBook.GetVisibleBids().Select(l => new PriceLevel
-                            {
-                                Price = l.Price,
-                                Quantity = l.Quantity
-                            }).ToList(),
-                            Asks = realAsks,
-                            LastPrice = orderBook.LastPrice,
-                            MidPrice = orderBook.MidPrice,
-                            Volume = orderBook.TotalVolume,
-                            Tick = day.CurrentTick
-                        };
-                        agentServer.Publish(taintedMarket, player.Token);
-                    }
-                }
-            }
+            // (Malicious shorting fake levels are already merged into per-player market state above)
         }
 
         // 3. During strategy selection, broadcast options

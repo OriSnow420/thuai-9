@@ -1,3 +1,5 @@
+using Thuai.GameLogic.StrategyCards;
+
 namespace Thuai.GameLogic;
 
 /// <summary>
@@ -176,7 +178,15 @@ public class MatchEngine
         if (playerToken == SystemToken)
             return 0;
         if (_players.TryGetValue(playerToken, out var player))
-            return (long)(tradeAmount * player.TransactionFeeRate);
+        {
+            long rawFee = (long)(tradeAmount * player.TransactionFeeRate);
+            var feeCard = player.ActiveCards
+                .OfType<StrategyCards.FeeExemption>()
+                .FirstOrDefault();
+            if (feeCard != null)
+                return feeCard.CalculateEffectiveFee(rawFee);
+            return rawFee;
+        }
         return 0;
     }
 
@@ -259,7 +269,6 @@ public class MatchEngine
             }
 
             buyer.AddGold(quantity);
-            buyer.TotalTradeCount++;
         }
 
         // --- Transfer seller assets ---
@@ -273,8 +282,16 @@ public class MatchEngine
             long proceeds = price * quantity - sellerFee;
             if (proceeds > 0)
                 seller.AddMora(proceeds);
+        }
 
-            seller.TotalTradeCount++;
+        // Increment trade count only for non-wash, non-system trades
+        bool isWashTrade = buyOrder.PlayerToken == sellOrder.PlayerToken;
+        if (!isWashTrade)
+        {
+            if (buyOrder.PlayerToken != SystemToken && _players.TryGetValue(buyOrder.PlayerToken, out var b))
+                b.TotalTradeCount++;
+            if (sellOrder.PlayerToken != SystemToken && _players.TryGetValue(sellOrder.PlayerToken, out var s))
+                s.TotalTradeCount++;
         }
 
         // --- Update order book state ---

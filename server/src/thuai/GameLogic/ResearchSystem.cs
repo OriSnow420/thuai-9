@@ -41,7 +41,8 @@ public class ResearchSystem
             Prediction = prediction,
             SubmitTick = currentTick,
             TicksUsed = ticksUsed,
-            DecayMultiplier = decayMultiplier
+            DecayMultiplier = decayMultiplier,
+            EffectiveWindow = effectiveWindow
         };
 
         _pendingReports.Add(report);
@@ -65,7 +66,7 @@ public class ResearchSystem
             long priceAtSettlement = getMidPriceAtTick(settlementTick);
             long actualChange = priceAtSettlement - priceAtPublish;
 
-            int effectiveWindow = _researchWindow;
+            int effectiveWindow = report.EffectiveWindow;
 
             if (news.IsFake && report.PlayerToken != news.SourcePlayer)
             {
