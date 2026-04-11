@@ -212,6 +212,73 @@ public class Program
                 };
                 agentServer.Publish(playerState, player.Token);
             }
+
+            // Insider news previews: send early news content to players with InsiderInfo card.
+            foreach (var (playerToken, preview) in day.PendingInsiderPreviews)
+            {
+                var previewMsg = new NewsBroadcastMessage
+                {
+                    NewsId = preview.NewsId,
+                    Content = preview.Content,
+                    PublishTick = preview.PublishTick
+                };
+                agentServer.Publish(previewMsg, playerToken);
+            }
+
+            // Malicious shorting: merge fake sell levels into the market view for opponents.
+            if (day.FakeSellLevels.Count > 0)
+            {
+                // Determine which players are affected by fake sell levels.
+                // Each fake level has an OwnerToken; the opponent(s) see the fakes.
+                var fakeLevelsByOwner = day.FakeSellLevels
+                    .GroupBy(f => f.OwnerToken)
+                    .ToDictionary(g => g.Key, g => g.Select(f => new PriceLevel
+                    {
+                        Price = f.Price,
+                        Quantity = f.Quantity
+                    }).ToList());
+
+                foreach (var player in game.Players.Values)
+                {
+                    // Collect fake levels from all OTHER players' malicious shorting.
+                    var fakeAsks = new List<PriceLevel>();
+                    foreach (var (ownerToken, levels) in fakeLevelsByOwner)
+                    {
+                        if (ownerToken != player.Token)
+                        {
+                            fakeAsks.AddRange(levels);
+                        }
+                    }
+
+                    if (fakeAsks.Count > 0)
+                    {
+                        // Merge real asks with fakes and re-sort by price ascending.
+                        var realAsks = orderBook.GetVisibleAsks().Select(l => new PriceLevel
+                        {
+                            Price = l.Price,
+                            Quantity = l.Quantity
+                        }).ToList();
+
+                        realAsks.AddRange(fakeAsks);
+                        realAsks.Sort((a, b) => a.Price.CompareTo(b.Price));
+
+                        var taintedMarket = new MarketStateMessage
+                        {
+                            Bids = orderBook.GetVisibleBids().Select(l => new PriceLevel
+                            {
+                                Price = l.Price,
+                                Quantity = l.Quantity
+                            }).ToList(),
+                            Asks = realAsks,
+                            LastPrice = orderBook.LastPrice,
+                            MidPrice = orderBook.MidPrice,
+                            Volume = orderBook.TotalVolume,
+                            Tick = day.CurrentTick
+                        };
+                        agentServer.Publish(taintedMarket, player.Token);
+                    }
+                }
+            }
         }
 
         // 3. During strategy selection, broadcast options

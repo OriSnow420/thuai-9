@@ -19,7 +19,8 @@ public class ResearchSystem
     }
 
     public ResearchReport? SubmitReport(string playerToken, int newsId, Prediction prediction,
-                                        int currentTick, int? playerResearchWindow = null)
+                                        int currentTick, int? playerResearchWindow = null,
+                                        double decayMultiplier = 1.0)
     {
         var news = _newsSystem.GetNews(newsId);
         if (news == null) return null;
@@ -39,7 +40,8 @@ public class ResearchSystem
             NewsId = newsId,
             Prediction = prediction,
             SubmitTick = currentTick,
-            TicksUsed = ticksUsed
+            TicksUsed = ticksUsed,
+            DecayMultiplier = decayMultiplier
         };
 
         _pendingReports.Add(report);
@@ -68,7 +70,7 @@ public class ResearchSystem
             if (news.IsFake && report.PlayerToken != news.SourcePlayer)
             {
                 report.IsCorrect = false;
-                double timeFactor = 1.0 - (double)report.TicksUsed / effectiveWindow;
+                double timeFactor = 1.0 - (double)report.TicksUsed / effectiveWindow * report.DecayMultiplier;
                 report.Reward = -(long)(_baseReward * timeFactor * Math.Max(Math.Abs(actualChange), 1));
 
                 _pendingReports.RemoveAt(i);
@@ -95,7 +97,7 @@ public class ResearchSystem
                 if (actualChange == 0)
                     report.IsCorrect = false;
 
-                double timeFactor = 1.0 - (double)report.TicksUsed / effectiveWindow;
+                double timeFactor = 1.0 - (double)report.TicksUsed / effectiveWindow * report.DecayMultiplier;
                 long rewardMagnitude = (long)(_baseReward * timeFactor * Math.Abs(actualChange));
 
                 report.Reward = report.IsCorrect == true ? rewardMagnitude : -rewardMagnitude;

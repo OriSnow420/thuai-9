@@ -11,6 +11,7 @@ public class NewsSystem
 
     private readonly List<News> _allNews = new();
     private News? _latestNews;
+    private News? _preGeneratedNews;
 
     private static readonly string[] BullishNews =
     [
@@ -52,13 +53,47 @@ public class NewsSystem
     {
         if (currentTick >= _nextNewsTick)
         {
-            var news = GenerateNews(currentTick);
+            News news;
+            if (_preGeneratedNews != null)
+            {
+                // Use the pre-generated news (created for insider preview) but
+                // stamp it with the actual publish tick so timing is correct.
+                news = new News
+                {
+                    NewsId = _preGeneratedNews.NewsId,
+                    PublishTick = currentTick,
+                    Content = _preGeneratedNews.Content,
+                    Sentiment = _preGeneratedNews.Sentiment,
+                    IsFake = false,
+                    SourcePlayer = null
+                };
+                _preGeneratedNews = null;
+            }
+            else
+            {
+                news = GenerateNews(currentTick);
+            }
             _allNews.Add(news);
             _latestNews = news;
             _nextNewsTick = currentTick + _rng.Next(_intervalMin, _intervalMax + 1);
             return news;
         }
         return null;
+    }
+
+    /// <summary>
+    /// Pre-generate the next news item so insider players can preview it early.
+    /// The returned News has a placeholder PublishTick (the expected publish tick);
+    /// the actual PublishTick is set when the news is formally published in Tick().
+    /// Returns null if already pre-generated or if the next tick is too far away.
+    /// </summary>
+    public News? PreGenerateNextNews()
+    {
+        if (_preGeneratedNews != null)
+            return _preGeneratedNews;
+
+        _preGeneratedNews = GenerateNews(_nextNewsTick);
+        return _preGeneratedNews;
     }
 
     private News GenerateNews(int publishTick)
@@ -131,6 +166,7 @@ public class NewsSystem
     {
         _allNews.Clear();
         _latestNews = null;
+        _preGeneratedNews = null;
         _nextNewsTick = _rng.Next(_intervalMin, _intervalMax + 1);
     }
 }

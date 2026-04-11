@@ -33,6 +33,9 @@ public class TradingDay
     // can inject fake sell levels into the opponent's market data view.
     private readonly List<(string OwnerToken, long Price, int Quantity)> _fakeSellLevels = new();
 
+    // Per-tick insider news previews to be consumed by the broadcast layer.
+    private readonly List<(string PlayerToken, News Preview)> _pendingInsiderPreviews = new();
+
     // ---- Events ----
 
     /// <summary>Fired when a news item is published (real or fake).</summary>
@@ -46,6 +49,12 @@ public class TradingDay
 
     /// <summary>Fired when a player's strategy card skill activates. Args: playerToken, skillName.</summary>
     public event Action<string, string>? OnSkillActivated;
+
+    /// <summary>
+    /// Fired when an insider player should receive a news preview early.
+    /// Args: playerToken, the pre-generated news content.
+    /// </summary>
+    public event Action<string, News>? OnInsiderNewsPreview;
 
     // ---- Public read-only state ----
 
@@ -62,6 +71,13 @@ public class TradingDay
     /// Cleared at the start of each tick.
     /// </summary>
     public IReadOnlyList<(string OwnerToken, long Price, int Quantity)> FakeSellLevels => _fakeSellLevels;
+
+    /// <summary>
+    /// Insider news previews generated this tick for players with the InsiderInfo card.
+    /// The broadcast layer should send these as early news messages to the specified players.
+    /// Cleared at the start of each tick.
+    /// </summary>
+    public IReadOnlyList<(string PlayerToken, News Preview)> PendingInsiderPreviews => _pendingInsiderPreviews;
 
     public TradingDay(
         Dictionary<string, Player> players,
@@ -97,6 +113,7 @@ public class TradingDay
         _midPriceHistory.Clear();
         _initialNAV.Clear();
         _fakeSellLevels.Clear();
+        _pendingInsiderPreviews.Clear();
 
         // Reset players for the new day.
         foreach (var player in _players.Values)
@@ -143,7 +160,8 @@ public class TradingDay
             return;
         }
 
-        // 1. Reset per-tick counters and unlock matured locked gold.
+        // 1. Reset per-tick counters, unlock matured locked gold, and clear per-tick buffers.
+        _pendingInsiderPreviews.Clear();
         foreach (var player in _players.Values)
         {
             player.ResetTickCounters();
@@ -177,6 +195,10 @@ public class TradingDay
 
         // 8. Record mid price for research settlement lookups.
         RecordMidPrice(_currentTick);
+
+        // 8.5 Insider news preview: if 3 ticks before the next news, pre-generate and
+        //     send to players holding the InsiderInfo card.
+        CheckInsiderNewsPreview();
 
         // 9. Tick news system — may publish a new news item.
         var news = _newsSystem.Tick(_currentTick);
@@ -248,15 +270,17 @@ public class TradingDay
         if (!_players.TryGetValue(playerToken, out var player)) return false;
         if (!player.CanSubmitReport()) return false;
 
-        // Check for quant cluster extended research window.
+        // Check for quant cluster extended research window and decay multiplier.
         int? extendedWindow = null;
+        double decayMultiplier = 1.0;
         var quantCard = player.ActiveCards.FirstOrDefault(c => c is QuantCluster) as QuantCluster;
         if (quantCard != null)
         {
             extendedWindow = quantCard.ExtendedResearchWindow;
+            decayMultiplier = quantCard.DecayMultiplier;
         }
 
-        var report = _researchSystem.SubmitReport(playerToken, newsId, prediction, _currentTick, extendedWindow);
+        var report = _researchSystem.SubmitReport(playerToken, newsId, prediction, _currentTick, extendedWindow, decayMultiplier);
         if (report != null)
         {
             player.ReportsSentThisTick++;
@@ -269,7 +293,8 @@ public class TradingDay
     /// Activate a strategy card skill. Each card type has its own activation logic.
     /// Returns true if the skill was successfully activated.
     /// </summary>
-    public bool HandleActivateSkill(string playerToken, string skillName)
+    /// <param name="direction">Optional direction for dark pool trading: "buy" or "sell".</param>
+    public bool HandleActivateSkill(string playerToken, string skillName, string? direction = null)
     {
         if (_isFinished) return false;
         if (!_players.TryGetValue(playerToken, out var player)) return false;
@@ -286,35 +311,12 @@ public class TradingDay
             TargetedPurchase tp => ActivateTargetedPurchase(player, tp),
             MaliciousShorting ms => ActivateMaliciousShorting(player, ms),
             NetworkDisconnect nd => ActivateNetworkDisconnect(player, nd),
-            DarkPoolTrading dp => ActivateDarkPoolBuy(player, dp),
+            DarkPoolTrading dp => direction?.ToLowerInvariant() == "sell"
+                ? ActivateDarkPoolSell(player, dp)
+                : ActivateDarkPoolBuy(player, dp),
             SentimentManipulation sm => ActivateSentimentManipulation(player, sm),
             _ => ActivateGeneric(player, card)
         };
-    }
-
-    /// <summary>
-    /// Activate the dark pool as a sell. Since HandleActivateSkill cannot encode
-    /// direction, this separate method lets the GameController route a directional
-    /// dark pool request.
-    /// </summary>
-    public bool HandleDarkPoolSell(string playerToken)
-    {
-        if (_isFinished) return false;
-        if (!_players.TryGetValue(playerToken, out var player)) return false;
-
-        var card = StrategyCardManager.FindActiveCard(player, "暗池交易");
-        if (card is not DarkPoolTrading dp) return false;
-        if (card is StrategyCard sc && !sc.CanActivate()) return false;
-
-        long midPrice = _orderBook.MidPrice;
-        if (midPrice <= 0) return false;
-        if (player.Gold < dp.TradeQuantity) return false;
-
-        player.AddGold(-dp.TradeQuantity);
-        player.AddMora(midPrice * dp.TradeQuantity);
-        dp.OnActivate(player, _currentTick);
-        OnSkillActivated?.Invoke(playerToken, dp.Name);
-        return true;
     }
 
     // =========================================================================
@@ -381,6 +383,41 @@ public class TradingDay
     // =========================================================================
     //  Private helpers
     // =========================================================================
+
+    /// <summary>
+    /// If the current tick is exactly 3 ticks before the next news publish tick,
+    /// pre-generate the upcoming news and send a preview to any player holding
+    /// the InsiderInfo card. Previews are stored in <see cref="_pendingInsiderPreviews"/>
+    /// for the broadcast layer to consume.
+    /// </summary>
+    private void CheckInsiderNewsPreview()
+    {
+        const int EarlyTicks = 3;
+
+        if (_currentTick != _newsSystem.NextNewsTick - EarlyTicks)
+            return;
+
+        // Collect players with InsiderInfo before doing any generation work.
+        var insiderPlayers = new List<Player>();
+        foreach (var player in _players.Values)
+        {
+            if (player.ActiveCards.Any(c => c is InsiderInfo))
+                insiderPlayers.Add(player);
+        }
+
+        if (insiderPlayers.Count == 0)
+            return;
+
+        var previewNews = _newsSystem.PreGenerateNextNews();
+        if (previewNews == null)
+            return;
+
+        foreach (var player in insiderPlayers)
+        {
+            _pendingInsiderPreviews.Add((player.Token, previewNews));
+            OnInsiderNewsPreview?.Invoke(player.Token, previewNews);
+        }
+    }
 
     private void HandleTradeExecuted(Trade trade)
     {
@@ -558,6 +595,23 @@ public class TradingDay
 
         player.AddMora(-cost);
         player.AddGold(dp.TradeQuantity);
+        dp.OnActivate(player, _currentTick);
+        OnSkillActivated?.Invoke(player.Token, dp.Name);
+        return true;
+    }
+
+    /// <summary>
+    /// Dark pool sell: sell TradeQuantity units at mid price to the system,
+    /// bypassing the order book entirely (no price impact).
+    /// </summary>
+    private bool ActivateDarkPoolSell(Player player, DarkPoolTrading dp)
+    {
+        long midPrice = _orderBook.MidPrice;
+        if (midPrice <= 0) return false;
+        if (player.Gold < dp.TradeQuantity) return false;
+
+        player.AddGold(-dp.TradeQuantity);
+        player.AddMora(midPrice * dp.TradeQuantity);
         dp.OnActivate(player, _currentTick);
         OnSkillActivated?.Invoke(player.Token, dp.Name);
         return true;
