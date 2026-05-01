@@ -1,0 +1,39 @@
+{
+  "server": {
+    "port": 14514
+  },
+  "token": {
+    "loadTokenFromEnv": true,
+    "tokenLocation": "TOKENS",
+    "tokenDelimiter": ","
+  },
+  "log": {
+    "target": "Console",
+    "minimumLevel": "Information",
+    "targetDirectory": "./logs",
+    "rollingInterval": "Day"
+  },
+  "game": {
+    "ticksPerSecond": 10,
+    "tradingDayTicks": 2000,
+    "tradingDayCount": 3,
+    "strategySelectionTicks": 40,
+    "minimumPlayerCount": 2,
+    "playerWaitingTicks": 200,
+    "initialMora": 1000000,
+    "initialGold": 1000,
+    "initialGoldPrice": 1000,
+    "defaultNetworkDelay": 5,
+    "defaultFeeRate": 0.0002,
+    "maxOrdersPerTick": 5,
+    "newsIntervalMin": 200,
+    "newsIntervalMax": 400,
+    "researchWindowTicks": 50,
+    "researchSettlementDelay": 100,
+    "baseResearchReward": 10000,
+    "npcOrdersPerTick": 3
+  },
+  "recorder": {
+    "keepRecord": false
+  }
+}

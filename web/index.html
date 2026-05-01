@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>璃月黄金交易所</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="top-bar">
+        <div class="brand-block">
+          <p class="eyebrow">THUAI-9</p>
+          <h1>璃月黄金交易所</h1>
+        </div>
+
+        <div class="top-metrics">
+          <div class="metric">
+            <span>阶段</span>
+            <strong id="stageValue">-</strong>
+          </div>
+          <div class="metric">
+            <span>交易日</span>
+            <strong id="dayValue">-</strong>
+          </div>
+          <div class="metric">
+            <span>Tick</span>
+            <strong id="tickValue">-</strong>
+          </div>
+          <div class="metric status-metric" id="connectionBadge">未连接</div>
+        </div>
+      </header>
+
+      <section class="control-strip" aria-label="connection controls">
+        <div class="segmented" id="modeTabs">
+          <button type="button" data-mode="observer">Observer</button>
+          <button type="button" data-mode="player">Player</button>
+        </div>
+
+        <label class="field server-field">
+          <span>Server</span>
+          <input id="serverInput" type="url" value="ws://localhost:14514" spellcheck="false">
+        </label>
+
+        <label class="field token-field">
+          <span>Token</span>
+          <input id="tokenInput" type="text" value="player1" spellcheck="false">
+        </label>
+
+        <label class="field appearance-field">
+          <span>颜色配置</span>
+          <select id="colorSchemeSelect" aria-label="颜色配置"></select>
+        </label>
+
+        <div class="button-row">
+          <button id="connectButton" class="primary-button" type="button">连接</button>
+          <button id="disconnectButton" type="button">断开</button>
+          <button id="demoButton" type="button">演示数据</button>
+        </div>
+      </section>
+
+      <main class="dashboard">
+        <section class="panel market-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Market</p>
+              <h2>K 线与成交量</h2>
+            </div>
+            <div class="inline-controls">
+              <label>
+                <span>价格</span>
+                <select id="priceModeSelect">
+                  <option value="midPrice">Mid</option>
+                  <option value="lastPrice">Last</option>
+                </select>
+              </label>
+              <label>
+                <span>间隔</span>
+                <select id="intervalSelect">
+                  <option value="10">10 Tick</option>
+                  <option value="20" selected>20 Tick</option>
+                  <option value="50">50 Tick</option>
+                  <option value="100">100 Tick</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <canvas id="marketCanvas" width="960" height="420"></canvas>
+        </section>
+
+        <section class="panel price-panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Book</p>
+              <h2>盘口</h2>
+            </div>
+          </div>
+          <div class="price-grid">
+            <div><span>Best Bid</span><strong id="bestBidValue">-</strong></div>
+            <div><span>Best Ask</span><strong id="bestAskValue">-</strong></div>
+            <div><span>Spread</span><strong id="spreadValue">-</strong></div>
+            <div><span>Mid</span><strong id="midValue">-</strong></div>
+            <div><span>Last</span><strong id="lastValue">-</strong></div>
+            <div><span>Volume</span><strong id="volumeValue">-</strong></div>
+          </div>
+          <div class="book-columns">
+            <div>
+              <h3>卖盘</h3>
+              <div id="asksList" class="book-list"></div>
+            </div>
+            <div>
+              <h3>买盘</h3>
+              <div id="bidsList" class="book-list"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel events-panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Timeline</p>
+              <h2>事件流</h2>
+            </div>
+          </div>
+          <div id="eventFeed" class="event-feed"></div>
+        </section>
+
+        <section class="panel score-panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Scores</p>
+              <h2>比分</h2>
+            </div>
+          </div>
+          <div id="scoreboard" class="scoreboard"></div>
+        </section>
+
+        <section class="panel observer-panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Observer</p>
+              <h2>玩家摘要</h2>
+            </div>
+          </div>
+          <div id="playerComparison" class="comparison-grid"></div>
+        </section>
+
+        <section class="panel portfolio-panel player-only">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Player</p>
+              <h2>资产</h2>
+            </div>
+          </div>
+          <div id="portfolioGrid" class="portfolio-grid"></div>
+        </section>
+
+        <section class="panel orders-panel player-only">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Orders</p>
+              <h2>挂单</h2>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Order ID</th>
+                  <th>Side</th>
+                  <th>Price</th>
+                  <th>Qty</th>
+                  <th>Remain</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="ordersTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel strategy-panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Strategy</p>
+              <h2>策略</h2>
+            </div>
+          </div>
+          <div id="strategyOptions" class="strategy-grid"></div>
+          <div id="activeCards" class="tag-row"></div>
+        </section>
+
+        <section class="panel actions-panel player-only">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Actions</p>
+              <h2>手动操作</h2>
+            </div>
+          </div>
+
+          <form id="orderForm" class="action-form">
+            <label>
+              <span>价格</span>
+              <input name="price" type="number" min="1" step="1" required>
+            </label>
+            <label>
+              <span>数量</span>
+              <input name="quantity" type="number" min="1" step="1" required>
+            </label>
+            <div class="button-row">
+              <button class="side-button buy" name="side" value="buy" type="submit">买入</button>
+              <button class="side-button sell" name="side" value="sell" type="submit">卖出</button>
+            </div>
+          </form>
+
+          <form id="cancelForm" class="action-form two-column">
+            <label>
+              <span>Order ID</span>
+              <input name="orderId" type="number" min="1" step="1" required>
+            </label>
+            <button type="submit">撤单</button>
+          </form>
+
+          <form id="reportForm" class="action-form">
+            <label>
+              <span>News ID</span>
+              <input name="newsId" type="number" min="1" step="1" required>
+            </label>
+            <label>
+              <span>方向</span>
+              <select name="prediction">
+                <option value="Long">Long</option>
+                <option value="Short">Short</option>
+                <option value="Hold">Hold</option>
+              </select>
+            </label>
+            <button type="submit">提交研报</button>
+          </form>
+
+          <form id="skillForm" class="action-form">
+            <label>
+              <span>技能</span>
+              <input name="skillName" type="text" placeholder="暗池交易" required>
+            </label>
+            <label>
+              <span>方向</span>
+              <select name="direction">
+                <option value="">-</option>
+                <option value="buy">buy</option>
+                <option value="sell">sell</option>
+              </select>
+            </label>
+            <button type="submit">激活技能</button>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <div id="settlementModal" class="modal" hidden>
+      <div class="modal-panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Settlement</p>
+            <h2 id="settlementTitle">结算</h2>
+          </div>
+          <button id="closeSettlementButton" type="button">关闭</button>
+        </div>
+        <div id="settlementBody" class="settlement-body"></div>
+      </div>
+    </div>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

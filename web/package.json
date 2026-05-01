@@ -1,0 +1,9 @@
+{
+  "name": "thuai-9-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "python3 -m http.server 5173 -d .",
+    "test": "node tests/candles.test.mjs"
+  }
+}

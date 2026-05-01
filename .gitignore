@@ -1,4 +1,6 @@
 # MacOS Cache
 .DS_Store
-
+.claude
+.codex
 .vscode
+server/data 
