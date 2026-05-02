@@ -210,6 +210,53 @@ public record SkillEffectMessage : Message
     public string Description { get; init; } = "";
 }
 
+public record DaySettlementMessage : Message
+{
+    public override string MessageType => "DAY_SETTLEMENT";
+
+    [JsonPropertyName("day")]
+    public int Day { get; init; }
+
+    [JsonPropertyName("winnerToken")]
+    public string WinnerToken { get; init; } = "";
+
+    [JsonPropertyName("reason")]
+    public string Reason { get; init; } = "";
+
+    [JsonPropertyName("players")]
+    public List<DaySettlementPlayer>? Players { get; init; }
+}
+
+public record DaySettlementPlayer
+{
+    [JsonPropertyName("token")]
+    public string Token { get; init; } = "";
+
+    [JsonPropertyName("nav")]
+    public long Nav { get; init; }
+
+    [JsonPropertyName("mora")]
+    public long Mora { get; init; }
+
+    [JsonPropertyName("gold")]
+    public int Gold { get; init; }
+
+    [JsonPropertyName("frozenMora")]
+    public long FrozenMora { get; init; }
+
+    [JsonPropertyName("frozenGold")]
+    public int FrozenGold { get; init; }
+
+    [JsonPropertyName("lockedGold")]
+    public int LockedGold { get; init; }
+
+    [JsonPropertyName("tradeCount")]
+    public int TradeCount { get; init; }
+
+    [JsonPropertyName("activeCards")]
+    public List<string>? ActiveCards { get; init; }
+}
+
 public record ErrorMessage : Message
 {
     public override string MessageType => "ERROR";

@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "serve": "python3 -m http.server 5175 -d .",
     "serve": "python3 -m http.server 5173 -d .",
     "test": "node tests/candles.test.mjs"
   }

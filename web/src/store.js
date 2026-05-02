@@ -60,6 +60,7 @@ export function createInitialState(route = {}) {
     },
     player: emptyPlayerState(),
     playerSummaries: {},
+    dailySummaries: [],
     strategy: {
       options: null,
     },
@@ -197,6 +198,7 @@ export function applyMessage(state, message) {
 
     case "DAY_SETTLEMENT":
       state.settlement = { ...message };
+      upsertDailySummary(state, message);
       state.ui.showSettlement = true;
       pushEvent(state, {
         kind: "settlement",
@@ -222,6 +224,23 @@ export function applyMessage(state, message) {
       });
       break;
   }
+}
+
+function upsertDailySummary(state, message) {
+  const day = numberOr(message.day, state.game.currentDay);
+  const summary = {
+    day,
+    winnerToken: message.winnerToken || "",
+    reason: message.reason || "",
+    players: Array.isArray(message.players) ? message.players : [],
+  };
+  const index = state.dailySummaries.findIndex((item) => item.day === day);
+  if (index >= 0) {
+    state.dailySummaries[index] = summary;
+  } else {
+    state.dailySummaries.push(summary);
+  }
+  state.dailySummaries.sort((a, b) => a.day - b.day);
 }
 
 export function pushEvent(state, event) {

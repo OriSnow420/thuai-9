@@ -15,6 +15,7 @@ export function renderApp(state) {
   renderPrices(state);
   renderOrderBook(state);
   renderEvents(state);
+  renderDailySummaries(state);
   renderPlayerComparison(state);
   renderPortfolio(state);
   renderOrders(state);
@@ -138,6 +139,53 @@ function renderEvents(state) {
       </article>
     `)
     .join("");
+}
+
+function renderDailySummaries(state) {
+  const node = document.getElementById("dailySummary");
+  if (!node) return;
+  if (!state.dailySummaries.length) {
+    node.innerHTML = PLACEHOLDER;
+    return;
+  }
+
+  node.innerHTML = state.dailySummaries
+    .map((summary) => {
+      const players = [...(summary.players || [])].sort((a, b) => String(a.token).localeCompare(String(b.token)));
+      return `
+        <article class="day-summary">
+          <div class="day-summary-head">
+            <strong>Day ${escapeHtml(summary.day)}</strong>
+            <span>Winner: ${escapeHtml(summary.winnerToken || "Tie")}</span>
+            <span>${escapeHtml(summary.reason || "-")}</span>
+          </div>
+          <div class="summary-player-grid">
+            ${players.map(renderSummaryPlayer).join("")}
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function renderSummaryPlayer(player) {
+  return `
+    <section class="summary-player">
+      <h3>${escapeHtml(player.token)}</h3>
+      <div class="summary-stats">
+        ${statCell("NAV", player.nav)}
+        ${statCell("Mora", player.mora)}
+        ${statCell("Gold", player.gold)}
+        ${statCell("Trades", player.tradeCount)}
+      </div>
+      <div class="summary-assets">
+        <span>Frozen Mora ${formatNumber(player.frozenMora)}</span>
+        <span>Frozen Gold ${formatNumber(player.frozenGold)}</span>
+        <span>Locked Gold ${formatNumber(player.lockedGold)}</span>
+      </div>
+      <div class="tag-row">${renderTags(player.activeCards || [])}</div>
+    </section>
+  `;
 }
 
 function renderPlayerComparison(state) {

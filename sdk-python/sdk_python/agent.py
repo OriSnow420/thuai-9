@@ -39,6 +39,7 @@ class Agent:
     async def connect(self):
         self._ws = await connect(self.server_url)
         logger.info(f"Connected to {self.server_url}")
+        await self.cancel_order(-1)
 
     async def disconnect(self):
         if self._ws:

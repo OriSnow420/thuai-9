@@ -4,6 +4,7 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <atomic>
 #include <nlohmann/json.hpp>
 #include <ixwebsocket/IXWebSocket.h>
 #include "models.hpp"
@@ -66,22 +67,27 @@ public:
 
     // --- Run ---
     void run() {
+        std::atomic_bool closed{false};
+
         ws_.setUrl(serverUrl_);
-        ws_.setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
+        ws_.setOnMessageCallback([this, &closed](const ix::WebSocketMessagePtr& msg) {
             if (msg->type == ix::WebSocketMessageType::Message) {
                 handleMessage(msg->str);
             } else if (msg->type == ix::WebSocketMessageType::Open) {
                 std::cout << "[Agent] Connected to " << serverUrl_ << std::endl;
+                cancelOrder(-1);
             } else if (msg->type == ix::WebSocketMessageType::Close) {
                 std::cout << "[Agent] Disconnected" << std::endl;
+                closed = true;
             } else if (msg->type == ix::WebSocketMessageType::Error) {
                 std::cerr << "[Agent] Error: " << msg->errorInfo.reason << std::endl;
+                closed = true;
             }
         });
         ws_.start();
 
         // Block until disconnected or game ends
-        while (ws_.getReadyState() != ix::ReadyState::Closed) {
+        while (!closed) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             if (gameState.stage == "Finished") break;
         }

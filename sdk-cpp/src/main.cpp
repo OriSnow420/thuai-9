@@ -5,6 +5,8 @@ class MyAgent : public thuai::Agent {
 public:
     using Agent::Agent;
 
+    int lastOrderTick = -999;
+
     void onGameState(const thuai::GameState& state) override {
         std::cout << "Game: " << state.stage
                   << " Day=" << state.currentDay
@@ -12,7 +14,20 @@ public:
     }
 
     void onMarketState(const thuai::MarketState& state) override {
-        // Implement your trading logic here
+        if (state.tick - lastOrderTick < 25) {
+            return;
+        }
+
+        if (!state.bids.empty() && playerState.gold > 0) {
+            limitSell(state.bids.front().price, 1);
+            lastOrderTick = state.tick;
+            return;
+        }
+
+        if (!state.asks.empty() && playerState.mora >= state.asks.front().price) {
+            limitBuy(state.asks.front().price, 1);
+            lastOrderTick = state.tick;
+        }
     }
 
     void onPlayerState(const thuai::PlayerState& state) override {

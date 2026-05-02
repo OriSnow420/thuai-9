@@ -9,13 +9,27 @@ logging.basicConfig(level=logging.INFO)
 
 
 class MyAgent(Agent):
-    """Example agent -- random strategy card selection, no trading logic."""
+    """Minimal example agent for a complete two-player match."""
+
+    def __init__(self, token: str, server_url: str):
+        super().__init__(token, server_url)
+        self._last_order_tick = -999
 
     async def on_game_state(self, state: GameState):
         logging.info(f"Game: {state.stage} Day={state.current_day} Tick={state.current_tick}")
 
     async def on_market_state(self, state: MarketState):
-        pass  # Implement your trading logic here
+        if state.tick - self._last_order_tick < 25:
+            return
+
+        if state.bids and self.player_state.gold > 0:
+            await self.limit_sell(state.bids[0].price, 1)
+            self._last_order_tick = state.tick
+            return
+
+        if state.asks and self.player_state.mora >= state.asks[0].price:
+            await self.limit_buy(state.asks[0].price, 1)
+            self._last_order_tick = state.tick
 
     async def on_player_state(self, state: PlayerState):
         pass  # Check your portfolio here

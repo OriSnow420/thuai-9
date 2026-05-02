@@ -161,6 +161,11 @@ public class Program
         };
         agentServer.PublishToAll(gameState);
 
+        if (game.Stage == GameStage.Settlement && game.CurrentTradingDay != null)
+        {
+            agentServer.PublishToAll(BuildDaySettlementMessage(game));
+        }
+
         // 2. During trading day, broadcast market state and per-player state
         if (game.Stage == GameStage.TradingDay && game.CurrentTradingDay != null)
         {
@@ -283,6 +288,53 @@ public class Program
             };
             agentServer.PublishToAll(options);
         }
+    }
+
+    private static DaySettlementMessage BuildDaySettlementMessage(Game game)
+    {
+        var day = game.CurrentTradingDay!;
+        var midPrice = day.OrderBook.MidPrice;
+        var players = game.Players.Values
+            .Select(player => new DaySettlementPlayer
+            {
+                Token = player.Token,
+                Nav = player.CalculateNAV(midPrice),
+                Mora = player.Mora,
+                Gold = player.Gold,
+                FrozenMora = player.FrozenMora,
+                FrozenGold = player.FrozenGold,
+                LockedGold = player.LockedGold,
+                TradeCount = player.TotalTradeCount,
+                ActiveCards = player.ActiveCards.Select(card => card.Name).ToList()
+            })
+            .OrderByDescending(player => player.Nav)
+            .ThenByDescending(player => player.TradeCount)
+            .ToList();
+
+        var winner = "";
+        var reason = "tie";
+        if (players.Count >= 2)
+        {
+            if (players[0].Nav > players[1].Nav)
+            {
+                winner = players[0].Token;
+                reason = "higher NAV";
+            }
+            else if (players[0].Nav == players[1].Nav
+                && players[0].TradeCount > players[1].TradeCount)
+            {
+                winner = players[0].Token;
+                reason = "trade-count tiebreaker";
+            }
+        }
+
+        return new DaySettlementMessage
+        {
+            Day = game.CurrentDayNumber,
+            WinnerToken = winner,
+            Reason = reason,
+            Players = players
+        };
     }
 
     private static void RecordGameState(Recorder.Recorder recorder, Game game)
