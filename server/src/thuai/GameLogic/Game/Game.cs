@@ -175,7 +175,16 @@ public partial class Game
             _settings.ResearchEnabled,
             _settings.MaxReportsPerTick,
             _settings.MaxReportsPerNews,
-            _settings.ResearchNewsScheduleTicks
+            _settings.ResearchNewsScheduleTicks,
+            _settings.NewsSentimentDurationTicks,
+            _settings.NpcNewsReactionDelayTicks,
+            _settings.SettlementTwapWindowTicks,
+            _settings.MarkPriceDepthLevels,
+            _settings.MarkPriceMinLevelQuantity,
+            _settings.MarkPriceMinOrderAgeTicks,
+            _settings.InitialLiquidityLevels,
+            _settings.InitialLiquidityBaseQuantity,
+            _settings.InitialLiquidityQuantityStep
         );
         CurrentTradingDay.Initialize();
 

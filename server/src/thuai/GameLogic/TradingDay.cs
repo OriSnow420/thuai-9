@@ -1,5 +1,6 @@
 namespace Thuai.GameLogic;
 
+using System.Numerics;
 using Thuai.GameLogic.StrategyCards;
 
 public record SkillActivation(int SourcePlayerId, string SkillName, string Description, int? TargetPlayerId = null);
@@ -18,6 +19,11 @@ public class TradingDay
     private readonly bool _researchEnabled;
     private readonly int _maxReportsPerTick;
     private readonly int _maxReportsPerNews;
+    private readonly int _npcNewsReactionDelayTicks;
+    private readonly int _settlementTwapWindowTicks;
+    private readonly int _initialLiquidityLevels;
+    private readonly int _initialLiquidityBaseQuantity;
+    private readonly int _initialLiquidityQuantityStep;
     private readonly Dictionary<int, long> _midPriceHistory = new();
     private readonly List<Trade> _tradesThisDay = new();
     private readonly List<ResearchReport> _settledReportsThisDay = new();
@@ -57,20 +63,34 @@ public class TradingDay
         bool researchEnabled = true,
         int maxReportsPerTick = 1,
         int maxReportsPerNews = 1,
-        IReadOnlyList<int>? scheduledNewsTicks = null)
+        IReadOnlyList<int>? scheduledNewsTicks = null,
+        int newsSentimentDurationTicks = 3,
+        int npcNewsReactionDelayTicks = 1,
+        int settlementTwapWindowTicks = 5,
+        int markPriceDepthLevels = 3,
+        int markPriceMinLevelQuantity = 20,
+        int markPriceMinOrderAgeTicks = 1,
+        int initialLiquidityLevels = 8,
+        int initialLiquidityBaseQuantity = 60,
+        int initialLiquidityQuantityStep = 10)
     {
         MonthNumber = monthNumber;
         _maxTicks = maxTicks;
         _initialGoldPrice = initialGoldPrice;
         _players = players;
-        _orderBook = new OrderBook(initialGoldPrice);
+        _orderBook = new OrderBook(initialGoldPrice, markPriceDepthLevels, markPriceMinLevelQuantity, markPriceMinOrderAgeTicks);
         _matchEngine = new MatchEngine(_orderBook, players);
-        _newsSystem = new NewsSystem(newsIntervalMin, newsIntervalMax, researchWindow, scheduledNewsTicks);
+        _newsSystem = new NewsSystem(newsIntervalMin, newsIntervalMax, researchWindow, scheduledNewsTicks, newsSentimentDurationTicks);
         _npcTrader = new NPCTrader(npcOrdersPerTick);
         _researchSystem = new ResearchSystem(_newsSystem, baseResearchReward, researchWindow, researchSettlementDelay);
         _researchEnabled = researchEnabled;
         _maxReportsPerTick = Math.Max(0, maxReportsPerTick);
         _maxReportsPerNews = Math.Max(0, maxReportsPerNews);
+        _npcNewsReactionDelayTicks = Math.Max(0, npcNewsReactionDelayTicks);
+        _settlementTwapWindowTicks = Math.Max(1, settlementTwapWindowTicks);
+        _initialLiquidityLevels = Math.Max(1, initialLiquidityLevels);
+        _initialLiquidityBaseQuantity = Math.Max(1, initialLiquidityBaseQuantity);
+        _initialLiquidityQuantityStep = Math.Max(0, initialLiquidityQuantityStep);
     }
 
     public void Initialize()
@@ -124,7 +144,8 @@ public class TradingDay
 
             CheckInsiderNewsPreview();
 
-            _npcTrader.GenerateOrders(_matchEngine, _orderBook, _newsSystem.CurrentSentiment, _currentTick);
+            var npcSentiment = _newsSystem.GetEffectiveSentiment(_currentTick, _npcNewsReactionDelayTicks);
+            _npcTrader.GenerateOrders(_matchEngine, _orderBook, npcSentiment, _currentTick);
             _tradesThisDay.AddRange(_matchEngine.ProcessDay(_currentTick));
             RecordMidPrice(_currentTick);
             SettlePendingReports();
@@ -231,8 +252,8 @@ public class TradingDay
     {
         lock (_lock)
         {
-            long midPrice = _orderBook.MidPrice;
-            return _players.Values.ToDictionary(player => player.Token, player => player.CalculateNAV(midPrice));
+            long settlementPrice = GetSettlementPriceAtTick(_currentTick);
+            return _players.Values.ToDictionary(player => player.Token, player => player.CalculateNAV(settlementPrice));
         }
     }
 
@@ -314,6 +335,7 @@ public class TradingDay
     {
         if (_isFinished) return false;
         if (!_players.TryGetValue(playerToken, out var player)) return false;
+        if (!player.CanPlaceOrder()) return false;
 
         int extraDelay = player.ConsumeNextOrderExtraDelayDays();
         int effectiveDelay = player.NetworkDelay + extraDelay;
@@ -323,19 +345,22 @@ public class TradingDay
 
         int priorityRank = player.HasInsiderPriorityDay(arrivalTick) ? 0 : 1;
         var order = _matchEngine.SubmitOrder(playerToken, side, price, quantity, _currentTick, effectiveDelay, priorityRank);
+        if (order != null)
+            player.MarkOrderSubmitted();
         return order != null;
     }
 
     private void SeedInitialLiquidity()
     {
-        for (int offset = 1; offset <= 5; offset++)
+        for (int offset = 1; offset <= _initialLiquidityLevels; offset++)
         {
-            var buy = new Order("SYSTEM", OrderSide.Buy, Math.Max(1, _initialGoldPrice - offset), 30 + offset * 5, 0, 0, 0)
+            int quantity = _initialLiquidityBaseQuantity + offset * _initialLiquidityQuantityStep;
+            var buy = new Order("SYSTEM", OrderSide.Buy, Math.Max(1, _initialGoldPrice - offset), quantity, 0, 0, 0)
             {
                 Intent = OrderIntent.Resting,
                 Status = OrderStatus.Pending
             };
-            var sell = new Order("SYSTEM", OrderSide.Sell, _initialGoldPrice + offset, 30 + offset * 5, 0, 0, 0)
+            var sell = new Order("SYSTEM", OrderSide.Sell, _initialGoldPrice + offset, quantity, 0, 0, 0)
             {
                 Intent = OrderIntent.Resting,
                 Status = OrderStatus.Pending
@@ -370,7 +395,7 @@ public class TradingDay
         if (!_researchEnabled)
             return;
 
-        foreach (var report in _researchSystem.SettleReports(_currentTick, GetMidPriceAtTick))
+        foreach (var report in _researchSystem.SettleReports(_currentTick, GetSettlementPriceAtTick))
         {
             if (!_players.TryGetValue(report.PlayerToken, out var player))
                 continue;
@@ -392,7 +417,35 @@ public class TradingDay
 
     private void RecordMidPrice(int tick)
     {
-        _midPriceHistory[tick] = _orderBook.MidPrice;
+        long fallback = tick > 0 && _midPriceHistory.TryGetValue(tick - 1, out var previousPrice)
+            ? previousPrice
+            : _orderBook.MidPrice;
+        _midPriceHistory[tick] = _orderBook.GetMarkPrice(tick, fallback);
+    }
+
+    private long GetSettlementPriceAtTick(int tick)
+    {
+        int endTick = Math.Max(0, tick);
+        int startTick = Math.Max(0, endTick - _settlementTwapWindowTicks + 1);
+        BigInteger total = BigInteger.Zero;
+        int count = 0;
+
+        for (int sampleTick = startTick; sampleTick <= endTick; sampleTick++)
+        {
+            total += GetMidPriceAtTick(sampleTick);
+            count++;
+        }
+
+        return count == 0 ? _initialGoldPrice : ClampToInt64(total / count);
+    }
+
+    private static long ClampToInt64(BigInteger value)
+    {
+        if (value > long.MaxValue)
+            return long.MaxValue;
+        if (value < long.MinValue)
+            return long.MinValue;
+        return (long)value;
     }
 
     private bool ActivateInsiderInfo(Player player, InsiderInfo insider, string? variant)

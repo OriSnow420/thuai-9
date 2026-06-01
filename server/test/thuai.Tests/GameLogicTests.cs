@@ -75,6 +75,26 @@ public class OrderBookTests
     }
 
     [Fact]
+    public void MarkPrice_IgnoresFreshOrTinyQuotes()
+    {
+        var freshBid = new Order("p1", OrderSide.Buy, price: 999, quantity: 5,
+            submitTick: 1, networkDelay: 0);
+        var freshAsk = new Order("p2", OrderSide.Sell, price: 1001, quantity: 5,
+            submitTick: 1, networkDelay: 0);
+        var matureBid = new Order("p3", OrderSide.Buy, price: 990, quantity: 50,
+            submitTick: 0, networkDelay: 0);
+        var matureAsk = new Order("p4", OrderSide.Sell, price: 1010, quantity: 50,
+            submitTick: 0, networkDelay: 0);
+
+        _book.AddOrder(freshBid);
+        _book.AddOrder(freshAsk);
+        _book.AddOrder(matureBid);
+        _book.AddOrder(matureAsk);
+
+        Assert.Equal(1000, _book.GetMarkPrice(currentTick: 1, fallbackPrice: 1000));
+    }
+
+    [Fact]
     public void RemoveOrder_ByOrderId_Succeeds()
     {
         var order = new Order("p1", OrderSide.Buy, price: 900, quantity: 10,
@@ -248,7 +268,7 @@ public class MatchEngineTests
             currentTick: 0);
 
         Assert.NotNull(order);
-        // notional = 100 * 10 = 1000; fee buffer = ceil(1000 * 0.0002) = 1
+        // notional = 100 * 10 = 1000; fee buffer = ceil(1000 * 0.001) = 1
         long expectedReserve = 1000 + (long)Math.Ceiling(1000 * _buyer.TransactionFeeRate);
         Assert.Equal(initialMora - expectedReserve, _buyer.Mora);
         Assert.Equal(expectedReserve, _buyer.FrozenMora);
@@ -503,7 +523,7 @@ public class MatchEngineTests
             currentTick: 0);
         _engine.ProcessTick(0);
 
-        // Seller receives proceeds minus fee. Fee = 1000 * 5 * 0.0002 = 1
+        // Seller receives proceeds minus fee. Fee = 1000 * 5 * 0.001 = 5
         long expectedProceeds = 1000 * 5 - (long)(1000 * 5 * _seller.TransactionFeeRate);
         Assert.Equal(initialMora + expectedProceeds, _seller.Mora);
     }
@@ -525,7 +545,7 @@ public class MatchEngineTests
 
         Assert.NotNull(executedTrade);
 
-        // Fee = tradeAmount * feeRate = 10000 * 0.0002 = 2
+        // Fee = tradeAmount * feeRate = 10000 * 0.001 = 10
         long expectedFee = (long)(1000 * 10 * _buyer.TransactionFeeRate);
         Assert.Equal(expectedFee, executedTrade.BuyerFee);
         Assert.Equal(expectedFee, executedTrade.SellerFee);
@@ -561,7 +581,7 @@ public class PlayerTests
         Assert.Equal(1_000, player.Gold);
         Assert.Equal(0, player.FrozenGold);
         Assert.Equal(1, player.NetworkDelay);
-        Assert.Equal(0.0002, player.TransactionFeeRate);
+        Assert.Equal(0.001, player.TransactionFeeRate);
         Assert.Equal(2, player.MaxOrdersPerTick);
         Assert.Equal(1, player.MaxReportsPerTick);
         Assert.Equal(1, player.MaxReportsPerNews);
@@ -761,6 +781,22 @@ public class NewsSystemTests
         Assert.NotNull(newsSystem.Tick(2));
         Assert.Null(newsSystem.Tick(3));
         Assert.NotNull(newsSystem.Tick(4));
+    }
+
+    [Fact]
+    public void EffectiveSentiment_IgnoresFakeNewsAndExpires()
+    {
+        var newsSystem = new NewsSystem(researchWindow: 50, scheduledNewsTicks: [1], sentimentDurationTicks: 2);
+        var realNews = newsSystem.Tick(1);
+        Assert.NotNull(realNews);
+
+        newsSystem.InjectFakeNews(2, "spoof", realNews!.Sentiment == NewsSentiment.Bullish
+            ? NewsSentiment.Bearish
+            : NewsSentiment.Bullish);
+
+        Assert.Equal(realNews.Sentiment, newsSystem.GetEffectiveSentiment(currentTick: 2));
+        Assert.Null(newsSystem.GetEffectiveSentiment(currentTick: 4));
+        Assert.NotNull(newsSystem.GetEffectiveSentiment(currentTick: 2, includeFakeNews: true));
     }
 
     [Fact]

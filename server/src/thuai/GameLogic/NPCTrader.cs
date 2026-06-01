@@ -1,11 +1,9 @@
 namespace Thuai.GameLogic;
 
 /// <summary>
-/// NPC trader (系统散户) that generates limit orders each tick to provide
-/// market liquidity. Orders are placed near the current bid/ask spread
-/// with small retail-sized quantities. When news sentiment is active,
-/// NPCs bias their order flow in the direction of the news.
-/// All NPC orders use PlayerToken "SYSTEM" and have zero network delay.
+/// NPC trader (系统做市商) that generates symmetric limit orders each tick to
+/// provide liquidity. News nudges the quote center slightly, but the NPC no
+/// longer chases price direction or crosses the spread.
 /// </summary>
 public class NPCTrader
 {
@@ -22,94 +20,100 @@ public class NPCTrader
     }
 
     /// <summary>
-    /// Generate NPC orders for the current tick. Orders are placed near the
-    /// current spread to build a realistic order book.
-    /// <para>
-    /// When <paramref name="sentiment"/> is Bullish, more buy orders are generated
-    /// at slightly higher prices. When Bearish, more sell orders at lower prices.
-    /// </para>
+    /// Generate NPC orders for the current tick. The maker always refreshes both
+    /// sides of the book, while sentiment only shifts the quote center a little.
     /// </summary>
     public void GenerateOrders(MatchEngine engine, OrderBook orderBook,
         NewsSentiment? sentiment, int currentTick)
     {
+        if (_ordersPerTick <= 0)
+            return;
+
         long mid = orderBook.MidPrice;
 
         // If both sides are empty and no last trade, skip — we have no price reference.
         if (mid <= 0)
             return;
 
-        // Slight randomness in order count: ordersPerTick +/- 1.
-        int orderCount = _ordersPerTick + _rng.Next(-1, 2);
-        if (orderCount <= 0)
-            orderCount = 1;
-
-        // Sentiment determines buy/sell probability bias.
-        double buyProbability = sentiment switch
+        int pairedQuotes = _ordersPerTick / 2;
+        for (int level = 0; level < pairedQuotes; level++)
         {
-            NewsSentiment.Bullish => 0.65,
-            NewsSentiment.Bearish => 0.35,
-            _ => 0.5
-        };
-
-        for (int i = 0; i < orderCount; i++)
-        {
-            bool isBuy = _rng.NextDouble() < buyProbability;
-            int quantity = _rng.Next(1, 11); // 1-10 units (retail-sized)
-
-            long price = ComputePrice(isBuy, mid, orderBook, sentiment);
-
-            // Safety: price must be positive.
-            if (price <= 0)
-                price = 1;
-
-            engine.SubmitOrder("SYSTEM", isBuy ? OrderSide.Buy : OrderSide.Sell,
-                price, quantity, currentTick);
+            SubmitQuote(engine, orderBook, OrderSide.Buy, mid, sentiment, currentTick, level);
+            SubmitQuote(engine, orderBook, OrderSide.Sell, mid, sentiment, currentTick, level);
         }
+
+        if (_ordersPerTick % 2 == 1)
+            SubmitQuote(engine, orderBook, ChooseExtraSide(orderBook), mid, sentiment, currentTick, pairedQuotes);
     }
 
-    /// <summary>
-    /// Compute a price for the NPC order. Prices cluster within 1-3 units of the
-    /// mid-price on the appropriate side of the book. When sentiment is active,
-    /// there is a small chance (30%) the order crosses the spread to apply
-    /// directional pressure.
-    /// </summary>
-    private long ComputePrice(bool isBuy, long mid, OrderBook orderBook,
-        NewsSentiment? sentiment)
+    private void SubmitQuote(
+        MatchEngine engine,
+        OrderBook orderBook,
+        OrderSide side,
+        long mid,
+        NewsSentiment? sentiment,
+        int currentTick,
+        int level)
     {
-        // Base offset: 1-3 price units away from mid.
-        long offset = _rng.Next(1, 4);
+        int quantity = _rng.Next(4, 13);
+        long price = ComputeQuotePrice(side, mid, orderBook, sentiment, level);
+        if (price <= 0)
+            price = 1;
 
-        if (isBuy)
+        engine.SubmitOrder("SYSTEM", side, price, quantity, currentTick);
+    }
+
+    private long ComputeQuotePrice(
+        OrderSide side,
+        long mid,
+        OrderBook orderBook,
+        NewsSentiment? sentiment,
+        int level)
+    {
+        long centerShift = sentiment switch
         {
-            // Anchor to best bid if available; otherwise use mid - offset.
-            long anchor = orderBook.BestBid ?? (mid - offset);
+            NewsSentiment.Bullish => 1,
+            NewsSentiment.Bearish => -1,
+            _ => 0
+        };
+        long quotedMid = Math.Max(1, mid + centerShift);
+        long levelOffset = 1 + (level % 3);
 
-            // Scatter around anchor: -1 to +1.
-            long price = anchor + _rng.Next(-1, 2);
-
-            // With bullish sentiment, occasionally cross the spread to push price up.
-            if (sentiment == NewsSentiment.Bullish && _rng.NextDouble() < 0.3)
-            {
-                price = mid + _rng.Next(0, 2);
-            }
-
-            return price;
-        }
-        else
+        if (side == OrderSide.Buy)
         {
-            // Anchor to best ask if available; otherwise use mid + offset.
-            long anchor = orderBook.BestAsk ?? (mid + offset);
-
-            // Scatter around anchor: -1 to +1.
-            long price = anchor + _rng.Next(-1, 2);
-
-            // With bearish sentiment, occasionally cross the spread to push price down.
-            if (sentiment == NewsSentiment.Bearish && _rng.NextDouble() < 0.3)
-            {
-                price = mid - _rng.Next(0, 2);
-            }
-
-            return price;
+            long buyCap = orderBook.BestAsk.HasValue
+                ? orderBook.BestAsk.Value - 1
+                : quotedMid - 1;
+            long anchor = orderBook.BestBid ?? (quotedMid - levelOffset);
+            long price = Math.Min(anchor + _rng.Next(0, 2), quotedMid - levelOffset);
+            return Math.Max(1, Math.Min(price, buyCap));
         }
+
+        long sellFloor = orderBook.BestBid.HasValue
+            ? orderBook.BestBid.Value + 1
+            : quotedMid + 1;
+        long sellAnchor = orderBook.BestAsk ?? (quotedMid + levelOffset);
+        long sellPrice = Math.Max(sellAnchor - _rng.Next(0, 2), quotedMid + levelOffset);
+        return Math.Max(sellFloor, sellPrice);
+    }
+
+    private OrderSide ChooseExtraSide(OrderBook orderBook)
+    {
+        var bestBidLevel = orderBook.GetVisibleBids(1).FirstOrDefault();
+        var bestAskLevel = orderBook.GetVisibleAsks(1).FirstOrDefault();
+
+        if (bestBidLevel == default && bestAskLevel == default)
+            return OrderSide.Buy;
+        if (bestBidLevel == default)
+            return OrderSide.Buy;
+        if (bestAskLevel == default)
+            return OrderSide.Sell;
+
+        if (bestBidLevel.Quantity < bestAskLevel.Quantity)
+            return OrderSide.Buy;
+        if (bestAskLevel.Quantity < bestBidLevel.Quantity)
+            return OrderSide.Sell;
+
+        return _rng.Next(2) == 0 ? OrderSide.Buy : OrderSide.Sell;
     }
 }
