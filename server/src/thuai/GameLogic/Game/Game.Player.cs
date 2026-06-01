@@ -10,6 +10,7 @@ public partial class Game
     private int _nextPlayerId;
     private readonly HashSet<string> _queuedPlayerJoins = new();
     private readonly HashSet<string> _queuedPlayerRemovals = new();
+    private readonly Dictionary<string, string> _playerDisplayNameOverrides = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Register a new player in the active game state.
@@ -38,6 +39,23 @@ public partial class Game
 
             _queuedPlayerJoins.Add(token);
             return true;
+        }
+    }
+
+    public void SetPlayerDisplayName(string token, string? displayName)
+    {
+        lock (_lock)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+                return;
+
+            var normalized = Player.NormalizeDisplayName(displayName);
+            if (normalized == null)
+                return;
+
+            _playerDisplayNameOverrides[token] = normalized;
+            if (Players.TryGetValue(token, out var player))
+                player.SetDisplayName(normalized);
         }
     }
 
@@ -112,7 +130,8 @@ public partial class Game
         if (Players.ContainsKey(token))
             return false;
 
-        var player = new Player(token, _nextPlayerId++, _settings);
+        _playerDisplayNameOverrides.TryGetValue(token, out var displayName);
+        var player = new Player(token, _nextPlayerId++, _settings, displayName);
         Players[token] = player;
         Scoreboard[token] = 0;
         CumulativeNavs[token] = 0;

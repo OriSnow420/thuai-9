@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>THUAI 9 比赛平台</title>
-    <link rel="stylesheet" href="/app.css?v=20260530-int64-score">
+    <link rel="stylesheet" href="/app.css?v=20260601-admin-code">
   </head>
   <body>
     <header class="site-header">
@@ -23,8 +23,8 @@
       <section class="panel auth-panel">
         <div class="panel-head">
           <div>
-            <p class="eyebrow">Team</p>
-            <h2>队伍登录</h2>
+            <p class="eyebrow">Account</p>
+            <h2>账号登录</h2>
           </div>
           <div class="tabs" role="tablist" aria-label="登录或注册">
             <button class="tab is-active" type="button" data-auth-tab="login">登录</button>
@@ -50,7 +50,13 @@
         </form>
 
         <div id="sessionPanel" class="session-panel is-hidden">
-          <div>
+          <div class="session-meta">
+            <span>当前身份</span>
+            <strong id="sessionDisplayName">-</strong>
+            <small id="sessionEmail">-</small>
+            <small id="sessionRole">-</small>
+          </div>
+          <div id="gameTokenWrap" class="session-token is-hidden">
             <span>游戏 Token</span>
             <code id="gameToken">-</code>
           </div>
@@ -58,33 +64,100 @@
         </div>
       </section>
 
-      <section class="panel upload-panel">
+      <section class="panel workspace-panel">
         <div class="panel-head">
           <div>
-            <p class="eyebrow">Submission</p>
-            <h2>提交代码</h2>
+            <p class="eyebrow">Workspace</p>
+            <h2>工作区</h2>
+          </div>
+          <div class="tabs" role="tablist" aria-label="代码或赛事">
+            <button class="tab is-active" type="button" data-workspace-tab="code">代码</button>
+            <button class="tab" type="button" data-workspace-tab="competitions">赛事</button>
           </div>
         </div>
 
-        <form id="uploadForm" class="stack">
-          <label class="field">
-            <span>代码名称</span>
-            <input name="name" type="text" maxlength="64" placeholder="例如：baseline / v2 / 冒险版">
-          </label>
-          <label class="field">
-            <span>代码压缩包</span>
-            <input name="file" type="file" accept=".zip" required>
-          </label>
-          <button class="primary" type="submit">上传</button>
-          <p id="uploadStatus" class="status" role="status"></p>
-        </form>
+        <div id="codeWorkspace" class="workspace-view">
+          <div id="teamOnlyNotice" class="empty is-hidden">当前账号不是队伍账号，无法提交或派遣代码。</div>
 
-        <div class="submissions">
-          <div class="section-title">
-            <h3>最近提交</h3>
-            <button id="refreshSubmissions" type="button">刷新</button>
+          <div id="teamWorkspace" class="stack">
+            <form id="uploadForm" class="stack">
+              <label class="field">
+                <span>代码名称</span>
+                <input name="name" type="text" maxlength="64" placeholder="例如：baseline / v2 / 冒险版">
+              </label>
+              <label class="field">
+                <span>代码压缩包</span>
+                <input name="file" type="file" accept=".zip" required>
+              </label>
+              <button class="primary" type="submit">上传</button>
+              <p id="uploadStatus" class="status" role="status"></p>
+            </form>
+
+            <div class="submissions">
+              <div class="section-title">
+                <h3>最近提交</h3>
+                <button id="refreshSubmissions" type="button">刷新</button>
+              </div>
+              <div id="submissionsList" class="empty">登录后显示提交记录。</div>
+            </div>
           </div>
-          <div id="submissionsList" class="empty">登录后显示提交记录。</div>
+        </div>
+
+        <div id="competitionsWorkspace" class="workspace-view is-hidden">
+          <div id="competitionAccessNotice" class="empty">登录后查看赛事。</div>
+
+          <div id="competitionWorkspace" class="stack is-hidden">
+            <form id="competitionForm" class="stack admin-form is-hidden">
+              <div class="section-title">
+                <h3>创建赛事</h3>
+                <span class="hint">仅管理员可见</span>
+              </div>
+              <label class="field">
+                <span>赛事名称</span>
+                <input name="name" type="text" maxlength="128" required placeholder="例如：六月月赛 / 资格赛 A 组">
+              </label>
+              <label class="field">
+                <span>赛事说明</span>
+                <textarea name="description" rows="3" placeholder="赛事规则、说明、备注"></textarea>
+              </label>
+              <div class="field-grid two-up">
+                <label class="field">
+                  <span>开始时间</span>
+                  <input name="scheduled_at" type="datetime-local" required>
+                </label>
+                <label class="field">
+                  <span>提交截止时间</span>
+                  <input name="submission_deadline" type="datetime-local">
+                </label>
+              </div>
+              <label class="field">
+                <span>游戏镜像</span>
+                <input name="live_server_image" type="text" required placeholder="例如：ghcr.io/thuasta/thuai-9-server:latest">
+              </label>
+              <div class="field">
+                <span>可参赛账号</span>
+                <div id="eligibleTeamsList" class="checkbox-grid empty">加载账号列表中...</div>
+              </div>
+              <button class="primary" type="submit">创建赛事</button>
+              <p id="competitionFormStatus" class="status" role="status"></p>
+            </form>
+
+            <div class="competition-layout">
+              <section class="competition-column">
+                <div class="section-title">
+                  <h3>赛事列表</h3>
+                  <button id="refreshCompetitions" type="button">刷新</button>
+                </div>
+                <div id="competitionsList" class="empty">登录后显示赛事列表。</div>
+              </section>
+              <section class="competition-column detail-column">
+                <div class="section-title">
+                  <h3>赛事详情</h3>
+                </div>
+                <div id="competitionDetail" class="empty">从左侧选择一个赛事查看详情。</div>
+              </section>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -116,6 +189,6 @@
       </section>
     </main>
 
-    <script type="module" src="/app.js?v=20260530-int64-score"></script>
+    <script type="module" src="/app.js?v=20260601-admin-code"></script>
   </body>
 </html>

@@ -62,6 +62,16 @@ public class Program
             if (infiniteMode)
                 Log.Information("Disconnected players will be removed after {Ticks} ticks", disconnectedPlayerRetentionTicks);
 
+            var playerNames = Tools.LoadPlayerNames(config.Token);
+            if (playerNames.Count > 0)
+            {
+                foreach (var (token, displayName) in playerNames)
+                    gameController.Game.SetPlayerDisplayName(token, displayName);
+
+                Log.Information("Loaded {Count} player display names from {EnvVar}",
+                    playerNames.Count, config.Token.PlayerNameLocation);
+            }
+
             // Load tokens and add players
             var tokens = Tools.LoadTokens(config.Token);
             Log.Information("Loaded {Count} player tokens", tokens.Length);
@@ -71,7 +81,8 @@ public class Program
                 agentServer.RegisterValidToken(token);
                 if (infiniteMode)
                     sessionTracker.SeedDisconnected(token, currentTick: 0);
-                Log.Information("Added player: {Token}", token);
+                Log.Information("Added player: {Token} as {PlayerName}",
+                    token, gameController.Game.FindPlayer(token)?.DisplayName ?? token);
             }
 
             // Wire events
@@ -221,6 +232,7 @@ public class Program
                 .Select(player => new PlayerScore
                 {
                     PlayerId = player.PlayerId,
+                    PlayerName = player.DisplayName,
                     Score = game.Scoreboard.GetValueOrDefault(player.Token)
                 })
                 .ToList()
@@ -525,12 +537,14 @@ public class Program
 
             foreach (var report in tradingDay.SettledReportsThisDay)
             {
+                var reportPlayer = game.FindPlayer(report.PlayerToken);
                 replayEvents.Add(new
                 {
                     Type = "report",
                     Month = game.CurrentMonthNumber,
-                    PlayerId = game.FindPlayer(report.PlayerToken)?.PlayerId ?? -1,
+                    PlayerId = reportPlayer?.PlayerId ?? -1,
                     PlayerToken = report.PlayerToken,
+                    PlayerName = reportPlayer?.DisplayName ?? report.PlayerToken,
                     NewsId = report.NewsId,
                     Prediction = report.Prediction.ToString(),
                     SubmitTick = report.SubmitTick,
@@ -544,6 +558,8 @@ public class Program
 
             foreach (var trade in tradingDay.TradesThisDay)
             {
+                var buyer = game.FindPlayer(trade.BuyerToken);
+                var seller = game.FindPlayer(trade.SellerToken);
                 replayEvents.Add(new
                 {
                     Type = "trade",
@@ -552,10 +568,12 @@ public class Program
                     TradeId = trade.TradeId,
                     BuyOrderId = trade.BuyOrderId,
                     SellOrderId = trade.SellOrderId,
-                    BuyerPlayerId = game.FindPlayer(trade.BuyerToken)?.PlayerId ?? -1,
-                    SellerPlayerId = game.FindPlayer(trade.SellerToken)?.PlayerId ?? -1,
+                    BuyerPlayerId = buyer?.PlayerId ?? -1,
+                    SellerPlayerId = seller?.PlayerId ?? -1,
                     BuyerToken = trade.BuyerToken,
                     SellerToken = trade.SellerToken,
+                    BuyerPlayerName = buyer?.DisplayName ?? trade.BuyerToken,
+                    SellerPlayerName = seller?.DisplayName ?? trade.SellerToken,
                     Price = trade.Price,
                     Quantity = trade.Quantity,
                     BuyerFee = trade.BuyerFee,
@@ -593,7 +611,16 @@ public class Program
             Stage = game.Stage.ToString(),
             Month = game.CurrentMonthNumber,
             Day = game.CurrentDayNumber,
-            Scores = game.Scoreboard,
+            Scores = game.Players.Values
+                .OrderBy(player => player.PlayerId)
+                .Select(player => new
+                {
+                    PlayerId = player.PlayerId,
+                    PlayerToken = player.Token,
+                    PlayerName = player.DisplayName,
+                    Score = game.Scoreboard.GetValueOrDefault(player.Token)
+                })
+                .ToList(),
             TradingDayTick = game.CurrentTradingDay?.CurrentTick,
             MarketState = recMarket != null ? new
             {
@@ -605,6 +632,7 @@ public class Program
             {
                 PlayerId = p.PlayerId,
                 Token = p.Token,
+                PlayerName = p.DisplayName,
                 Mora = p.Mora,
                 Gold = p.Gold,
                 FrozenMora = p.FrozenMora,

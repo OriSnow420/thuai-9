@@ -500,6 +500,20 @@ class ProtocolParserTests(unittest.TestCase):
 class ProtocolActionTests(unittest.IsolatedAsyncioTestCase):
     """Outbound action coverage for the Python SDK."""
 
+    async def test_connect_includes_optional_player_name(self) -> None:
+        """HELLO should carry playerName when the agent was configured with one."""
+
+        fake_ws = FakeWebSocket([])
+        agent = Agent("player-1", player_name="Alpha")
+
+        with patch("sdk_python.agent.connect", new=AsyncMock(return_value=fake_ws)):
+            await agent.connect()
+
+        self.assertEqual(1, len(fake_ws.sent_messages))
+        hello = json.loads(fake_ws.sent_messages[0])
+        self.assertEqual("HELLO", hello["messageType"])
+        self.assertEqual("Alpha", hello["playerName"])
+
     async def test_run_dispatches_messages_and_closes_socket(self) -> None:
         """The event loop should connect, dispatch, and close cleanly."""
 

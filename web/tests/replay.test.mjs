@@ -34,6 +34,7 @@ async function testReplaySessionBuildsFramesWithStatEvents() {
           {
             playerId: 0,
             token: "alpha",
+            playerName: "代码A",
             mora: 1000,
             gold: 1,
             nav: 2000,
@@ -72,6 +73,7 @@ async function testReplaySessionBuildsFramesWithStatEvents() {
           {
             playerId: 0,
             token: "alpha",
+            playerName: "代码A",
             mora: 1000,
             gold: 1,
             nav: 2003,
@@ -129,6 +131,10 @@ async function testReplaySessionBuildsFramesWithStatEvents() {
   assert.ok(messageTypes(session.frames[1]).includes("PLAYER_SUMMARY_STATE"));
   assert.ok(messageTypes(session.frames[1]).includes("NEWS_BROADCAST"));
   assert.ok(messageTypes(session.frames[1]).includes("REPLAY_ORDER"));
+  assert.equal(
+    session.frames[1].messages.find((message) => message.messageType === "PLAYER_SUMMARY_STATE")?.playerName,
+    "代码A",
+  );
   assert.ok(messageTypes(session.frames[2]).includes("REPORT_RESULT"));
   assert.ok(messageTypes(session.frames[2]).includes("SKILL_EFFECT"));
   assert.equal(messageTypes(session.frames[2]).filter((type) => type === "REPLAY_ORDER").length, 0);

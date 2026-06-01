@@ -26,8 +26,11 @@ inline constexpr int kWaitingTimeMs = 100;
 class Agent {
  public:
   explicit Agent(std::string token,
-                 std::string serverUrl = "ws://localhost:14514")
-      : token_(std::move(token)), serverUrl_(std::move(serverUrl)) {}
+                 std::string serverUrl = "ws://localhost:14514",
+                 std::optional<std::string> playerName = std::nullopt)
+      : token_(std::move(token)),
+        serverUrl_(std::move(serverUrl)),
+        playerName_(std::move(playerName)) {}
 
   virtual ~Agent() = default;
 
@@ -120,7 +123,8 @@ class Agent {
 
           if (msg->type == ix::WebSocketMessageType::Open) {
             spdlog::info("Connected to {}", serverUrl_);
-            send(protocol::buildHelloMessage(token_));
+            send(protocol::buildHelloMessage(token_, "player", std::nullopt,
+                                             playerName_));
             return;
           }
 
@@ -157,6 +161,7 @@ class Agent {
  private:
   std::string token_;
   std::string serverUrl_;
+  std::optional<std::string> playerName_;
   ix::WebSocket ws_;
   // Serializes the snapshot writes on the WS thread against the reads in run()
   // and getAllPlayerIds(); never held across an on* handler call so user code

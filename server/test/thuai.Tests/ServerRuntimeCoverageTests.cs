@@ -725,11 +725,14 @@ public class ProgramRuntimeCoverageTests
             Assert.Equal(game.CurrentDayNumber, snapshot.GetProperty("day").GetInt32());
             Assert.Equal(game.CurrentTradingDay!.CurrentTick, snapshot.GetProperty("tradingDayTick").GetInt32());
             Assert.Equal(game.CurrentTradingDay.OrderBook.LastPrice, snapshot.GetProperty("marketState").GetProperty("lastPrice").GetInt64());
+            Assert.Contains(snapshot.GetProperty("scores").EnumerateArray(),
+                score => score.GetProperty("playerName").GetString() == "Player0");
             Assert.Contains(snapshot.GetProperty("players").EnumerateArray(),
                 player => player.GetProperty("token").GetString() == "alpha");
             var alpha = snapshot.GetProperty("players").EnumerateArray()
                 .Single(player => player.GetProperty("token").GetString() == "alpha");
             Assert.Equal(0, alpha.GetProperty("playerId").GetInt32());
+            Assert.Equal("Player0", alpha.GetProperty("playerName").GetString());
             Assert.True(alpha.TryGetProperty("activeCards", out _));
             Assert.Contains(alpha.GetProperty("pendingOrders").EnumerateArray(),
                 order => order.GetProperty("orderId").GetInt64() > 0);

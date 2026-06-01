@@ -58,6 +58,7 @@ public sealed class PlayerStatisticsWriter
                 return new PlayerStatisticsSnapshot
                 {
                     Token = token,
+                    PlayerName = player?.DisplayName,
                     PlayerId = player?.PlayerId,
                     InGame = player != null,
                     Connected = session?.IsConnected ?? false,
@@ -138,6 +139,9 @@ public sealed record PlayerStatisticsSnapshot
 {
     [JsonPropertyName("token")]
     public string Token { get; init; } = "";
+
+    [JsonPropertyName("playerName")]
+    public string? PlayerName { get; init; }
 
     [JsonPropertyName("playerId")]
     public int? PlayerId { get; init; }

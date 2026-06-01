@@ -14,7 +14,8 @@ using json = nlohmann::json;
 
 inline auto buildHelloMessage(
     const std::string& token, const std::string& role = "player",
-    const std::optional<std::string>& adminSecret = std::nullopt) -> json {
+    const std::optional<std::string>& adminSecret = std::nullopt,
+    const std::optional<std::string>& playerName = std::nullopt) -> json {
   json message = {
       {"messageType", "HELLO"},
       {"token", token},
@@ -22,6 +23,9 @@ inline auto buildHelloMessage(
   };
   if (adminSecret.has_value()) {
     message["adminSecret"] = *adminSecret;
+  }
+  if (playerName.has_value() && !playerName->empty()) {
+    message["playerName"] = *playerName;
   }
   return message;
 }

@@ -39,6 +39,9 @@ public record TokenSettings
 
     [JsonPropertyName("tokenDelimiter")]
     public string TokenDelimiter { get; init; } = ",";
+
+    [JsonPropertyName("playerNameLocation")]
+    public string PlayerNameLocation { get; init; } = "PLAYER_NAMES_JSON";
 }
 
 public record LogSettings

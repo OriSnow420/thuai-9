@@ -124,6 +124,37 @@ public class UtilityCoverageTests
     }
 
     [Fact]
+    public void LoadPlayerNames_ReadsJsonAndFallbackFormats()
+    {
+        var envName = $"THUAI_TEST_{Guid.NewGuid():N}";
+        var original = Environment.GetEnvironmentVariable(envName);
+
+        try
+        {
+            Environment.SetEnvironmentVariable(envName, """{"alpha":"代码A","beta":"代码B"}""");
+            var fromJson = Tools.LoadPlayerNames(new TokenSettings
+            {
+                PlayerNameLocation = envName,
+            });
+            Assert.Equal("代码A", fromJson["alpha"]);
+            Assert.Equal("代码B", fromJson["beta"]);
+
+            Environment.SetEnvironmentVariable(envName, "alpha=代码A,beta=代码B");
+            var fromPairs = Tools.LoadPlayerNames(new TokenSettings
+            {
+                PlayerNameLocation = envName,
+                TokenDelimiter = ","
+            });
+            Assert.Equal("代码A", fromPairs["alpha"]);
+            Assert.Equal("代码B", fromPairs["beta"]);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(envName, original);
+        }
+    }
+
+    [Fact]
     public void Config_RoundTripPreservesSections()
     {
         var config = new Config
@@ -307,7 +338,7 @@ public class RecorderCoverageTests
             using (var recorder = new RecorderService(dir))
             {
                 recorder.Record(new { stage = "TradingDay", tick = 3 });
-                recorder.SaveResults(new Dictionary<string, int> { ["alpha"] = 10 });
+                recorder.SaveResults(new Dictionary<string, long> { ["alpha"] = 10 });
             }
 
             var replayFile = Path.Combine(dir, "replay.dat");

@@ -236,20 +236,26 @@ export function applyMessage(state, message) {
       break;
 
     case "GAME_STATE":
-      state.game = {
-        ...state.game,
-        stage: message.stage || "",
-        currentMonth: numberOr(message.currentMonth, state.game.currentMonth),
-        currentDay: numberOr(message.currentDay, 0),
-        currentTick: numberOr(message.currentTick, 0),
-        totalTicks: numberOr(message.totalTicks, 0),
-        stageTick: numberOr(message.stageTick, state.game.stageTick),
-        stageTickLimit: numberOr(message.stageTickLimit, state.game.stageTickLimit),
-        dayTick: numberOr(message.dayTick, state.market.tick || state.game.dayTick),
-        dayTickLimit: numberOr(message.dayTickLimit, state.game.dayTickLimit),
-        scores: normalizeScores(message.scores),
-      };
-      break;
+      {
+        const scores = normalizeScores(message.scores);
+        scores.forEach((score) => {
+          registerPlayerIdentity(state, score.playerId, score.playerToken, score.playerName);
+        });
+        state.game = {
+          ...state.game,
+          stage: message.stage || "",
+          currentMonth: numberOr(message.currentMonth, state.game.currentMonth),
+          currentDay: numberOr(message.currentDay, 0),
+          currentTick: numberOr(message.currentTick, 0),
+          totalTicks: numberOr(message.totalTicks, 0),
+          stageTick: numberOr(message.stageTick, state.game.stageTick),
+          stageTickLimit: numberOr(message.stageTickLimit, state.game.stageTickLimit),
+          dayTick: numberOr(message.dayTick, state.market.tick || state.game.dayTick),
+          dayTickLimit: numberOr(message.dayTickLimit, state.game.dayTickLimit),
+          scores,
+        };
+        break;
+      }
 
     case "MARKET_STATE":
       state.market.bids = Array.isArray(message.bids) ? message.bids : [];
@@ -264,13 +270,18 @@ export function applyMessage(state, message) {
 
     case "PLAYER_STATE":
       state.player = normalizePlayerState(message);
-      registerPlayerIdentity(state, state.player.playerId, message.token || state.connection.token);
+      registerPlayerIdentity(
+        state,
+        state.player.playerId,
+        message.token || state.connection.token,
+        message.playerName || state.player.playerName || "",
+      );
       break;
 
     case "PLAYER_SUMMARY_STATE":
       {
         const summary = normalizePlayerSummary(message);
-        registerPlayerIdentity(state, summary.playerId, summary.token);
+        registerPlayerIdentity(state, summary.playerId, summary.token, summary.playerName);
         const key = summary.playerId >= 0 ? String(summary.playerId) : summary.token;
         if (key) {
           state.playerSummaries[key] = summary;
@@ -299,6 +310,7 @@ export function applyMessage(state, message) {
           tick: numberOr(message.settlementTick, state.market.tick),
           playerId: numberOr(message.playerId, -1),
           playerToken: message.playerToken || "",
+          playerName: message.playerName || "",
           reward: numberOr(message.reward, 0),
           isPrivate: true,
         });
@@ -323,6 +335,7 @@ export function applyMessage(state, message) {
           tick: numberOr(message.tick, state.market.tick),
           playerId: numberOr(message.playerId, -1),
           playerToken: message.playerToken || "",
+          playerName: message.playerName || "",
           side,
           price: numberOr(message.price, 0),
           quantity: numberOr(message.quantity, 0),
@@ -350,6 +363,7 @@ export function applyMessage(state, message) {
         tick: numberOr(message.tick, state.market.tick),
         playerId: numberOr(message.playerId, -1),
         playerToken: message.playerToken || "",
+        playerName: message.playerName || "",
         side: message.side || "",
         price: numberOr(message.price, 0),
         quantity: numberOr(message.quantity, 0),
@@ -361,7 +375,7 @@ export function applyMessage(state, message) {
       pushEvent(state, {
         kind: "trade",
         title: `成交 #${message.tradeId ?? "-"}`,
-        detail: `买方 ${playerDisplayName(state, message.buyerPlayerId, message.buyerToken)} / 卖方 ${playerDisplayName(state, message.sellerPlayerId, message.sellerToken)} price=${message.price ?? 0} qty=${message.quantity ?? 0}`,
+        detail: `买方 ${playerDisplayName(state, message.buyerPlayerId, message.buyerToken, message.buyerPlayerName)} / 卖方 ${playerDisplayName(state, message.sellerPlayerId, message.sellerToken, message.sellerPlayerName)} price=${message.price ?? 0} qty=${message.quantity ?? 0}`,
         tick: numberOr(message.tick, state.market.tick),
         price: numberOr(message.price, 0),
         quantity: numberOr(message.quantity, 0),
@@ -369,6 +383,8 @@ export function applyMessage(state, message) {
         sellerPlayerId: numberOr(message.sellerPlayerId, -1),
         buyerToken: message.buyerToken || "",
         sellerToken: message.sellerToken || "",
+        buyerPlayerName: message.buyerPlayerName || "",
+        sellerPlayerName: message.sellerPlayerName || "",
         isPrivate: true,
       });
       break;
@@ -556,6 +572,7 @@ function normalizePlayerState(message) {
   return {
     playerId: numberOr(message.playerId, -1),
     token: message.token || "",
+    playerName: message.playerName || "",
     mora: numberOr(message.mora, 0),
     frozenMora: numberOr(message.frozenMora, 0),
     gold: numberOr(message.gold, 0),
@@ -572,6 +589,7 @@ function normalizePlayerSummary(message) {
   return {
     playerId: numberOr(message.playerId, -1),
     token: message.token || message.playerToken || "",
+    playerName: message.playerName || "",
     mora: numberOr(message.mora, 0),
     frozenMora: numberOr(message.frozenMora, 0),
     gold: numberOr(message.gold, 0),
@@ -590,6 +608,7 @@ function emptyPlayerState() {
   return {
     playerId: -1,
     token: "",
+    playerName: "",
     mora: 0,
     frozenMora: 0,
     gold: 0,
@@ -605,6 +624,7 @@ function emptyPlayerDirectory() {
   return {
     labelsById: {},
     idsByToken: {},
+    serverLabelsById: {},
   };
 }
 
@@ -614,12 +634,69 @@ function emptyPlayerDirectory() {
 // token-keyed bridge could never resolve for them.
 export function applyPlayerMap(state, entries) {
   if (!Array.isArray(entries)) return;
+  const directory = ensurePlayerDirectory(state);
   for (const entry of entries) {
     const id = numberOr(entry.player_id, -1);
     const teamName = String(entry.team_name || "").trim();
     if (id < 0 || !teamName) continue;
-    state.playerDirectory.labelsById[id] = teamName;
+    if (directory.serverLabelsById[id]) continue;
+    directory.labelsById[id] = teamName;
   }
+}
+
+export function applyManagedObserverLiveState(state, payload) {
+  const directory = ensurePlayerDirectory(state);
+  const players = Array.isArray(payload?.players) ? payload.players : [];
+  const nextSummaries = {};
+  const nextScores = [];
+
+  for (const rawPlayer of players) {
+    if (!rawPlayer || typeof rawPlayer !== "object") continue;
+
+    const playerId = numberOr(rawPlayer.player_id ?? rawPlayer.playerId, -1);
+    if (playerId < 0) continue;
+
+    const teamName = String(rawPlayer.team_name ?? rawPlayer.teamName ?? "").trim();
+    const playerName = String(rawPlayer.player_name ?? rawPlayer.playerName ?? "").trim();
+    const submissionName = String(rawPlayer.submission_name ?? rawPlayer.submissionName ?? "").trim();
+    const displayName = playerName || submissionName || teamName;
+
+    if (displayName) {
+      directory.serverLabelsById[playerId] = displayName;
+      directory.labelsById[playerId] = displayName;
+    } else if (teamName && !directory.labelsById[playerId]) {
+      directory.labelsById[playerId] = teamName;
+    }
+
+    const summary = {
+      playerId,
+      token: "",
+      playerName: displayName,
+      mora: numberOr(rawPlayer.mora, 0),
+      frozenMora: numberOr(rawPlayer.frozen_mora ?? rawPlayer.frozenMora, 0),
+      gold: numberOr(rawPlayer.gold, 0),
+      frozenGold: numberOr(rawPlayer.frozen_gold ?? rawPlayer.frozenGold, 0),
+      lockedGold: numberOr(rawPlayer.locked_gold ?? rawPlayer.lockedGold, 0),
+      nav: numberOr(rawPlayer.current_nav ?? rawPlayer.currentNav, 0),
+      activeCards: Array.isArray(rawPlayer.active_cards ?? rawPlayer.activeCards)
+        ? (rawPlayer.active_cards ?? rawPlayer.activeCards)
+        : [],
+      pendingOrders: [],
+      pendingOrderCount: 0,
+      tradeCount: numberOr(rawPlayer.monthly_trade_count ?? rawPlayer.monthlyTradeCount, 0),
+      monthlyTradeCount: numberOr(rawPlayer.monthly_trade_count ?? rawPlayer.monthlyTradeCount, 0),
+    };
+    nextSummaries[String(playerId)] = summary;
+    nextScores.push({
+      playerId,
+      playerToken: "",
+      playerName: displayName,
+      score: rawPlayer.score ?? 0,
+    });
+  }
+
+  state.playerSummaries = nextSummaries;
+  state.game.scores = nextScores;
 }
 
 function normalizeScores(scores) {
@@ -627,24 +704,39 @@ function normalizeScores(scores) {
   return scores.map((score) => ({
     playerId: numberOr(score.playerId, -1),
     playerToken: score.playerToken || score.token || "",
+    playerName: score.playerName || "",
     score: score.score ?? 0,
   }));
 }
 
-function registerPlayerIdentity(state, playerId, token) {
+function registerPlayerIdentity(state, playerId, token, playerName = "") {
+  const directory = ensurePlayerDirectory(state);
   const id = numberOr(playerId, -1);
   const label = String(token || "").trim();
+  const displayName = String(playerName || "").trim();
+  if (id < 0) return;
+  if (displayName) {
+    directory.serverLabelsById[id] = displayName;
+    directory.labelsById[id] = displayName;
+  }
+  if (label) {
+    directory.idsByToken[label] = id;
+  }
+  if (displayName) return;
   if (id < 0 || !label) return;
-  state.playerDirectory.idsByToken[label] = id;
-  // Only fall back to the in-game token as a label if the platform mapping
-  // hasn't already supplied a team name for this player (don't clobber it).
-  if (!state.playerDirectory.labelsById[id]) {
-    state.playerDirectory.labelsById[id] = label;
+  if ((state.replay.enabled || state.connection.role !== "observer")
+    && !directory.labelsById[id]) {
+    directory.labelsById[id] = label;
   }
 }
 
 function actorFromMessage(state, message) {
-  return playerDisplayName(state, numberOr(message.playerId, -1), message.playerToken || "");
+  return playerDisplayName(
+    state,
+    numberOr(message.playerId, -1),
+    message.playerToken || "",
+    message.playerName || "",
+  );
 }
 
 function canDisplayPrivateEvents(state) {
@@ -663,36 +755,61 @@ function numberOr(value, fallback) {
   return Number.isFinite(number) ? number : fallback;
 }
 
-export function playerDisplayName(state, playerId, token = "") {
+export function playerDisplayName(state, playerId, token = "", playerName = "") {
+  const directory = ensurePlayerDirectory(state);
+  const displayName = String(playerName || "").trim();
+  if (displayName) return displayName;
   const tokenLabel = String(token || "").trim();
   if (tokenLabel === "SYSTEM") return "系统";
   const id = numberOr(playerId, -1);
 
-  // Replay: identities come from the replay payload's own tokens. Never consult
-  // labelsById — those describe whichever match the live poll is tracking now,
-  // which has nothing to do with the match being replayed.
+  // Replay rebuilds playerDirectory from replay snapshots after reset, so
+  // serverLabelsById is safe to use here when a replay carries playerName
+  // values; live player-map labels must not leak into an unrelated replay.
   if (state.replay.enabled) {
     if (tokenLabel) return tokenLabel;
+    if (id >= 0 && directory.serverLabelsById[id]) {
+      return directory.serverLabelsById[id];
+    }
     return id >= 0 ? `选手 ${id}` : "-";
   }
 
   // Live observer: show the platform team name (keyed by playerId), never the
   // raw in-game token (observers don't receive it anyway).
   if (state.connection.role === "observer") {
-    if (id >= 0 && state.playerDirectory.labelsById[id]) {
-      return state.playerDirectory.labelsById[id];
+    if (id >= 0 && directory.labelsById[id]) {
+      return directory.labelsById[id];
     }
     return id >= 0 ? `选手 ${id}` : "-";
   }
 
-  // Live player / admin: own token, then any team-name label, then the id.
+  if (id >= 0 && directory.labelsById[id]) {
+    return directory.labelsById[id];
+  }
+  // Live player / admin: own token, then any token hint, then the id.
   if (id >= 0 && id === state.player.playerId && state.connection.token) {
     return state.connection.token;
   }
   if (tokenLabel) return tokenLabel;
   if (id < 0) return "-";
-  if (state.playerDirectory.labelsById[id]) {
-    return state.playerDirectory.labelsById[id];
-  }
   return `选手 ${id}`;
+}
+
+function ensurePlayerDirectory(state) {
+  if (!state.playerDirectory || typeof state.playerDirectory !== "object") {
+    state.playerDirectory = emptyPlayerDirectory();
+    return state.playerDirectory;
+  }
+
+  if (!state.playerDirectory.labelsById || typeof state.playerDirectory.labelsById !== "object") {
+    state.playerDirectory.labelsById = {};
+  }
+  if (!state.playerDirectory.idsByToken || typeof state.playerDirectory.idsByToken !== "object") {
+    state.playerDirectory.idsByToken = {};
+  }
+  if (!state.playerDirectory.serverLabelsById || typeof state.playerDirectory.serverLabelsById !== "object") {
+    state.playerDirectory.serverLabelsById = {};
+  }
+
+  return state.playerDirectory;
 }

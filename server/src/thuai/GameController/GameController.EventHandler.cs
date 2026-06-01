@@ -69,6 +69,8 @@ public partial class GameController
     /// </summary>
     public void HandleAfterPlayerConnectEvent(object? sender, AgentServer.AfterPlayerConnectEventArgs e)
     {
+        Game.SetPlayerDisplayName(e.Token, e.PlayerName);
+
         if (Game.FindPlayer(e.Token) != null)
         {
             Log.Information("Player {Token} connected", e.Token);
