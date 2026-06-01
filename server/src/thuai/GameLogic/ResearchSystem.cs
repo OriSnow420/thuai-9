@@ -1,5 +1,7 @@
 namespace Thuai.GameLogic;
 
+using System.Numerics;
+
 public class ResearchSystem
 {
     private readonly NewsSystem _newsSystem;
@@ -47,7 +49,7 @@ public class ResearchSystem
         return report;
     }
 
-    public List<ResearchReport> SettleReports(int currentTick, Func<int, long> getMidPriceAtTick)
+    public List<ResearchReport> SettleReports(int currentTick, Func<int, long> getPriceAtTick)
     {
         var settled = new List<ResearchReport>();
         var dueReports = _pendingReports
@@ -66,8 +68,8 @@ public class ResearchSystem
                 continue;
 
             int settlementTick = news.PublishTick + _settlementDelay;
-            long priceAtPublish = getMidPriceAtTick(news.PublishTick);
-            long priceAtSettlement = getMidPriceAtTick(settlementTick);
+            long priceAtPublish = getPriceAtTick(news.PublishTick);
+            long priceAtSettlement = getPriceAtTick(settlementTick);
             long actualChange = priceAtSettlement - priceAtPublish;
             long magnitude = Math.Abs(actualChange);
 
@@ -100,7 +102,7 @@ public class ResearchSystem
                 else
                 {
                     long rankMultiplier = Math.Max(1, ordered.Count - i);
-                    long rewardMagnitude = _baseReward * rankMultiplier * magnitude;
+                    long rewardMagnitude = ClampToInt64((BigInteger)_baseReward * rankMultiplier * magnitude);
                     report.Reward = isCorrect ? rewardMagnitude : -rewardMagnitude;
                 }
 
@@ -126,5 +128,14 @@ public class ResearchSystem
     {
         _pendingReports.Clear();
         _settledReports.Clear();
+    }
+
+    private static long ClampToInt64(BigInteger value)
+    {
+        if (value > long.MaxValue)
+            return long.MaxValue;
+        if (value < long.MinValue)
+            return long.MinValue;
+        return (long)value;
     }
 }

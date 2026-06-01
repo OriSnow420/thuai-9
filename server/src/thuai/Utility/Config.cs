@@ -98,7 +98,10 @@ public record GameSettings
     public int DefaultNetworkDelay { get; init; } = 1;
 
     [JsonPropertyName("defaultFeeRate")]
-    public double DefaultFeeRate { get; init; } = 0.0002;
+    public double DefaultFeeRate { get; init; } = 0.001;
+
+    [JsonPropertyName("maxOrdersPerTick")]
+    public int MaxOrdersPerTick { get; init; } = 2;
 
     // Per-day action quotas that the engine actually enforces (Player.CanPlace*).
     [JsonPropertyName("maxImmediateOrdersPerDay")]
@@ -136,6 +139,33 @@ public record GameSettings
 
     [JsonPropertyName("npcOrdersPerTick")]
     public int NpcOrdersPerTick { get; init; } = 3;
+
+    [JsonPropertyName("newsSentimentDurationTicks")]
+    public int NewsSentimentDurationTicks { get; init; } = 3;
+
+    [JsonPropertyName("npcNewsReactionDelayTicks")]
+    public int NpcNewsReactionDelayTicks { get; init; } = 1;
+
+    [JsonPropertyName("settlementTwapWindowTicks")]
+    public int SettlementTwapWindowTicks { get; init; } = 5;
+
+    [JsonPropertyName("markPriceDepthLevels")]
+    public int MarkPriceDepthLevels { get; init; } = 3;
+
+    [JsonPropertyName("markPriceMinLevelQuantity")]
+    public int MarkPriceMinLevelQuantity { get; init; } = 20;
+
+    [JsonPropertyName("markPriceMinOrderAgeTicks")]
+    public int MarkPriceMinOrderAgeTicks { get; init; } = 1;
+
+    [JsonPropertyName("initialLiquidityLevels")]
+    public int InitialLiquidityLevels { get; init; } = 8;
+
+    [JsonPropertyName("initialLiquidityBaseQuantity")]
+    public int InitialLiquidityBaseQuantity { get; init; } = 60;
+
+    [JsonPropertyName("initialLiquidityQuantityStep")]
+    public int InitialLiquidityQuantityStep { get; init; } = 10;
 }
 
 public record RecorderSettings

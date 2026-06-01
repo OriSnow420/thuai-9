@@ -5,12 +5,14 @@ public class NewsSystem
     private static readonly int[] DefaultScheduledNewsTicks = [1, 11, 21];
     private readonly Random _rng = new();
     private readonly int _researchWindow;
+    private readonly int _sentimentDurationTicks;
     private readonly int[] _scheduledNewsTicks;
     private int _nextNewsId = 1;
     private int _scheduledIndex;
     private int _nextNewsTick;
 
     private readonly List<News> _allNews = new();
+    private readonly List<News> _realNews = new();
     private News? _latestNews;
     private News? _preGeneratedNews;
 
@@ -43,9 +45,10 @@ public class NewsSystem
     ];
 
     public NewsSystem(int intervalMin = 1, int intervalMax = 1, int researchWindow = 2,
-        IReadOnlyList<int>? scheduledNewsTicks = null)
+        IReadOnlyList<int>? scheduledNewsTicks = null, int sentimentDurationTicks = 3)
     {
         _researchWindow = researchWindow;
+        _sentimentDurationTicks = Math.Max(0, sentimentDurationTicks);
         _scheduledNewsTicks = NormalizeScheduledTicks(scheduledNewsTicks);
         _scheduledIndex = 0;
         _nextNewsTick = _scheduledNewsTicks.Length > 0 ? _scheduledNewsTicks[0] : int.MaxValue;
@@ -76,6 +79,7 @@ public class NewsSystem
         }
 
         _allNews.Add(news);
+        _realNews.Add(news);
         _latestNews = news;
 
         _scheduledIndex++;
@@ -157,9 +161,32 @@ public class NewsSystem
 
     public News? LatestNews => _latestNews;
 
+    public News? LatestRealNews => _realNews.Count > 0 ? _realNews[^1] : null;
+
     public IReadOnlyList<News> AllNews => _allNews;
 
-    public NewsSentiment? CurrentSentiment => _latestNews?.Sentiment;
+    public NewsSentiment? CurrentSentiment => LatestRealNews?.Sentiment;
+
+    public NewsSentiment? GetEffectiveSentiment(int currentTick, int reactionDelayTicks = 0, bool includeFakeNews = false)
+    {
+        int effectiveTick = currentTick - Math.Max(0, reactionDelayTicks);
+        if (effectiveTick < 0)
+            return null;
+
+        var source = includeFakeNews ? _allNews : _realNews;
+        for (int index = source.Count - 1; index >= 0; index--)
+        {
+            var news = source[index];
+            if (news.PublishTick > effectiveTick)
+                continue;
+
+            return effectiveTick - news.PublishTick <= _sentimentDurationTicks
+                ? news.Sentiment
+                : null;
+        }
+
+        return null;
+    }
 
     public int? NextNewsTickForInsider => _nextNewsTick is > 3 and < int.MaxValue ? _nextNewsTick - 3 : null;
     public int PreviewTick => _scheduledIndex < _scheduledNewsTicks.Length ? Math.Max(0, _nextNewsTick - 3) : -1;
@@ -192,6 +219,7 @@ public class NewsSystem
     public void Reset()
     {
         _allNews.Clear();
+        _realNews.Clear();
         _latestNews = null;
         _preGeneratedNews = null;
         _scheduledIndex = 0;

@@ -661,6 +661,8 @@ public class NpcTraderCoverageTests
 
         Assert.NotEmpty(engine.PendingOrders);
         Assert.All(engine.PendingOrders, order => Assert.Equal("SYSTEM", order.PlayerToken));
+        Assert.Contains(engine.PendingOrders, order => order.Side == OrderSide.Buy);
+        Assert.Contains(engine.PendingOrders, order => order.Side == OrderSide.Sell);
     }
 }
 
@@ -675,8 +677,8 @@ public class TradingDayCoverageTests
 
         day.Initialize();
 
-        Assert.Equal(5, day.OrderBook.Bids.Count);
-        Assert.Equal(5, day.OrderBook.Asks.Count);
+        Assert.Equal(8, day.OrderBook.Bids.Count);
+        Assert.Equal(8, day.OrderBook.Asks.Count);
         Assert.Equal(999, day.OrderBook.BestBid);
         Assert.Equal(1001, day.OrderBook.BestAsk);
         Assert.Equal(1000, day.GetMidPriceAtTick(0));
@@ -696,6 +698,18 @@ public class TradingDayCoverageTests
     }
 
     [Fact]
+    public void HandleLimitBuy_RejectsWhenMaxOrdersPerTickReached()
+    {
+        var (day, players) = CreateTradingDay(maxTicks: 5);
+        players["alpha"].MaxOrdersPerTick = 2;
+
+        Assert.True(day.HandleLimitBuy("alpha", 100, 1));
+        Assert.True(day.HandleLimitBuy("alpha", 100, 1));
+        Assert.False(day.HandleLimitBuy("alpha", 100, 1));
+        Assert.Equal(2, day.MatchEngine.PendingOrders.Count);
+    }
+
+    [Fact]
     public void HandleSubmitReport_SettlesReportsAndPublishesNotifications()
     {
         var (day, _) = CreateTradingDay(maxTicks: 5);
@@ -709,6 +723,8 @@ public class TradingDayCoverageTests
         day.Tick();
         day.Tick();
         day.OrderBook.Clear();
+        day.OrderBook.AddOrder(new Order("SYSTEM", OrderSide.Buy, 1998, 50, submitTick: 0, networkDelay: 0));
+        day.OrderBook.AddOrder(new Order("SYSTEM", OrderSide.Sell, 2002, 50, submitTick: 0, networkDelay: 0));
         day.OrderBook.UpdateLastPrice(2000);
         day.Tick();
 

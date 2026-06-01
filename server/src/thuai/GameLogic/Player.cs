@@ -1,4 +1,5 @@
 using Thuai.GameLogic.StrategyCards;
+using System.Numerics;
 using Thuai.Utility;
 
 namespace Thuai.GameLogic;
@@ -12,6 +13,7 @@ public class Player
     private readonly double _baseTransactionFeeRate;
     private readonly int _baseImmediateOrdersPerDay;
     private readonly int _baseRestingOrdersPerDay;
+    private readonly int _baseMaxOrdersPerTick;
 
     public string Token { get; }
     public int PlayerId { get; }
@@ -66,6 +68,7 @@ public class Player
         _baseTransactionFeeRate = settings.DefaultFeeRate;
         _baseImmediateOrdersPerDay = settings.MaxImmediateOrdersPerDay;
         _baseRestingOrdersPerDay = settings.MaxRestingOrdersPerDay;
+        _baseMaxOrdersPerTick = settings.MaxOrdersPerTick;
 
         ResetForNewMonth();
     }
@@ -106,7 +109,7 @@ public class Player
             TransactionFeeRate = _baseTransactionFeeRate;
             MaxImmediateOrdersPerDay = _baseImmediateOrdersPerDay;
             MaxRestingOrdersPerDay = _baseRestingOrdersPerDay;
-            MaxOrdersPerTick = _baseImmediateOrdersPerDay + _baseRestingOrdersPerDay;
+            MaxOrdersPerTick = _baseMaxOrdersPerTick;
             MaxReportsPerTick = 1;
             MaxReportsPerNews = 1;
             ImmediateOrdersUsedToday = 0;
@@ -144,7 +147,7 @@ public class Player
                 effectivePrice = ProtectedMidPrice - (ProtectedMidPrice - midPrice) / 5;
             }
 
-            return Mora + FrozenMora + (long)(Gold + FrozenGold + LockedGold) * effectivePrice;
+            return ClampToInt64((BigInteger)Mora + FrozenMora + (BigInteger)(Gold + FrozenGold + LockedGold) * effectivePrice);
         }
     }
 
@@ -161,16 +164,19 @@ public class Player
 
     public bool CanSubmitReport() => ReportsSentThisTick < MaxReportsPerTick;
 
+    public void MarkOrderSubmitted()
+    {
+        OrdersSentThisTick++;
+    }
+
     public void MarkImmediateOrder()
     {
         ImmediateOrdersUsedToday++;
-        OrdersSentThisTick++;
     }
 
     public void MarkRestingOrder()
     {
         RestingOrdersUsedToday++;
-        OrdersSentThisTick++;
     }
 
     public void MarkReportSubmitted(int newsId)
@@ -302,7 +308,7 @@ public class Player
     {
         lock (_lock)
         {
-            Mora += amount;
+            Mora = ClampToInt64((BigInteger)Mora + amount);
         }
     }
 
@@ -334,5 +340,14 @@ public class Player
             LockedGold += amount;
             LockedGoldUntilTick = untilTick;
         }
+    }
+
+    private static long ClampToInt64(BigInteger value)
+    {
+        if (value > long.MaxValue)
+            return long.MaxValue;
+        if (value < long.MinValue)
+            return long.MinValue;
+        return (long)value;
     }
 }

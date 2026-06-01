@@ -1,5 +1,7 @@
 namespace Thuai.GameLogic;
 
+using System.Numerics;
+
 /// <summary>
 /// Limit order book maintaining price-time priority for bids and asks.
 /// Bids are sorted by descending price, then fastest priority first.
@@ -7,6 +9,10 @@ namespace Thuai.GameLogic;
 /// </summary>
 public class OrderBook
 {
+    private readonly int _markPriceDepthLevels;
+    private readonly int _markPriceMinLevelQuantity;
+    private readonly int _markPriceMinOrderAgeTicks;
+
     // Bids: highest price first, then lower priority rank, then earliest arrival.
     // SortedSet.Min returns the first element per the comparer, which is the best bid.
     private readonly SortedSet<Order> _bids;
@@ -47,9 +53,16 @@ public class OrderBook
         ? (BestBid.Value + BestAsk.Value) / 2
         : LastPrice;
 
-    public OrderBook(long initialPrice)
+    public OrderBook(
+        long initialPrice,
+        int markPriceDepthLevels = 3,
+        int markPriceMinLevelQuantity = 20,
+        int markPriceMinOrderAgeTicks = 1)
     {
         LastPrice = initialPrice;
+        _markPriceDepthLevels = Math.Max(1, markPriceDepthLevels);
+        _markPriceMinLevelQuantity = Math.Max(1, markPriceMinLevelQuantity);
+        _markPriceMinOrderAgeTicks = Math.Max(0, markPriceMinOrderAgeTicks);
 
         _bids = new SortedSet<Order>(Comparer<Order>.Create((a, b) =>
         {
@@ -122,6 +135,24 @@ public class OrderBook
         TotalVolume += quantity;
     }
 
+    public long GetMarkPrice(int currentTick, long? fallbackPrice = null)
+    {
+        long fallback = fallbackPrice ?? MidPrice;
+        var bidLevels = AggregateEligibleLevels(_bids, _markPriceDepthLevels, currentTick);
+        var askLevels = AggregateEligibleLevels(_asks, _markPriceDepthLevels, currentTick);
+
+        if (bidLevels.Count == 0 || askLevels.Count == 0)
+            return fallback;
+
+        long weightedBid = WeightedAverage(bidLevels);
+        long weightedAsk = WeightedAverage(askLevels);
+        if (weightedBid <= 0 || weightedAsk <= 0 || weightedBid > weightedAsk)
+            return fallback;
+
+        var midpoint = (BigInteger)weightedBid + weightedAsk;
+        return ClampToInt64((midpoint + 1) / 2);
+    }
+
     /// <summary>
     /// Get aggregated visible bid levels for market data broadcast.
     /// </summary>
@@ -166,6 +197,74 @@ public class OrderBook
             levels.Add((currentPrice, currentQty));
 
         return levels;
+    }
+
+    private List<(long Price, int Quantity)> AggregateEligibleLevels(
+        SortedSet<Order> orders,
+        int maxLevels,
+        int currentTick)
+    {
+        var levels = new List<(long Price, int Quantity)>();
+        long? currentPrice = null;
+        int currentQty = 0;
+
+        foreach (var order in orders)
+        {
+            if (!IsEligibleForMarkPrice(order, currentTick))
+                continue;
+
+            if (currentPrice != order.Price)
+            {
+                if (currentPrice.HasValue && currentQty >= _markPriceMinLevelQuantity)
+                {
+                    levels.Add((currentPrice.Value, currentQty));
+                    if (levels.Count >= maxLevels)
+                        return levels;
+                }
+
+                currentPrice = order.Price;
+                currentQty = 0;
+            }
+
+            currentQty += order.RemainingQuantity;
+        }
+
+        if (currentPrice.HasValue && currentQty >= _markPriceMinLevelQuantity && levels.Count < maxLevels)
+            levels.Add((currentPrice.Value, currentQty));
+
+        return levels;
+    }
+
+    private bool IsEligibleForMarkPrice(Order order, int currentTick)
+    {
+        return order.RemainingQuantity > 0
+            && currentTick - order.ArrivalTick >= _markPriceMinOrderAgeTicks;
+    }
+
+    private static long WeightedAverage(IReadOnlyList<(long Price, int Quantity)> levels)
+    {
+        BigInteger weightedSum = BigInteger.Zero;
+        BigInteger totalQuantity = BigInteger.Zero;
+
+        foreach (var (price, quantity) in levels)
+        {
+            weightedSum += (BigInteger)price * quantity;
+            totalQuantity += quantity;
+        }
+
+        if (totalQuantity == BigInteger.Zero)
+            return 0;
+
+        return ClampToInt64(weightedSum / totalQuantity);
+    }
+
+    private static long ClampToInt64(BigInteger value)
+    {
+        if (value > long.MaxValue)
+            return long.MaxValue;
+        if (value < long.MinValue)
+            return long.MinValue;
+        return (long)value;
     }
 
     /// <summary>Get all active (Pending or PartiallyFilled) orders for a specific player.</summary>

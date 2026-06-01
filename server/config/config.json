@@ -27,7 +27,8 @@
     "initialGold": 1000,
     "initialGoldPrice": 1000,
     "defaultNetworkDelay": 1,
-    "defaultFeeRate": 0.0002,
+    "defaultFeeRate": 0.001,
+    "maxOrdersPerTick": 2,
     "maxImmediateOrdersPerDay": 1,
     "maxRestingOrdersPerDay": 1,
     "maxReportsPerNews": 1,
@@ -39,7 +40,16 @@
     "researchWindowTicks": 2,
     "researchSettlementDelay": 3,
     "baseResearchReward": 10000,
-    "npcOrdersPerTick": 3
+    "npcOrdersPerTick": 3,
+    "newsSentimentDurationTicks": 3,
+    "npcNewsReactionDelayTicks": 1,
+    "settlementTwapWindowTicks": 5,
+    "markPriceDepthLevels": 3,
+    "markPriceMinLevelQuantity": 20,
+    "markPriceMinOrderAgeTicks": 1,
+    "initialLiquidityLevels": 8,
+    "initialLiquidityBaseQuantity": 60,
+    "initialLiquidityQuantityStep": 10
   },
   "recorder": {
     "keepRecord": false,
