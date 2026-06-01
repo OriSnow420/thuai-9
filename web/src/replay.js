@@ -108,6 +108,7 @@ function playerToSummaryState(player) {
     messageType: "PLAYER_SUMMARY_STATE",
     playerId: optionalNumber(readField(player, "playerId")),
     token: String(readField(player, "token") || ""),
+    playerName: String(readField(player, "playerName") || ""),
     mora: readNumber(player, "mora", 0),
     frozenMora: readNumber(player, "frozenMora", 0),
     gold: readNumber(player, "gold", 0),
@@ -154,6 +155,7 @@ function eventToMessages(event, snapshot) {
       messageType: "REPORT_RESULT",
       playerId: optionalNumber(readField(event, "playerId")),
       playerToken: String(readField(event, "playerToken") || ""),
+      playerName: String(readField(event, "playerName") || ""),
       newsId: readNumber(event, "newsId", 0),
       submissionRank: readNumber(event, "submissionRank", 0),
       submitTick: readNumber(event, "submitTick", 0),
@@ -177,6 +179,8 @@ function eventToMessages(event, snapshot) {
       sellerPlayerId: optionalNumber(readField(event, "sellerPlayerId")),
       buyerToken: String(readField(event, "buyerToken") || ""),
       sellerToken: String(readField(event, "sellerToken") || ""),
+      buyerPlayerName: String(readField(event, "buyerPlayerName") || ""),
+      sellerPlayerName: String(readField(event, "sellerPlayerName") || ""),
       price: readNumber(event, "price", 0),
       quantity: readNumber(event, "quantity", 0),
       buyerFee: readNumber(event, "buyerFee", 0),
@@ -189,6 +193,7 @@ function eventToMessages(event, snapshot) {
       messageType: "REPLAY_ORDER",
       playerId: optionalNumber(readField(event, "playerId")),
       playerToken: String(readField(event, "playerToken") || ""),
+      playerName: String(readField(event, "playerName") || ""),
       orderId: optionalNumber(readField(event, "orderId")),
       side: String(readField(event, "side") || ""),
       price: readNumber(event, "price", 0),
@@ -236,6 +241,7 @@ function extractOrderEvents(snapshot, seenOrders) {
   for (const player of arrayOf(readField(snapshot, "players"))) {
     const playerId = optionalNumber(readField(player, "playerId"));
     const playerToken = String(readField(player, "token") || "");
+    const playerName = String(readField(player, "playerName") || "");
     for (const order of arrayOf(readField(player, "pendingOrders"))) {
       const orderId = readField(order, "orderId");
       if (orderId === undefined || orderId === null || orderId === "") continue;
@@ -247,6 +253,7 @@ function extractOrderEvents(snapshot, seenOrders) {
         action: "submit",
         playerId,
         playerToken,
+        playerName,
         orderId,
         tick,
         side: String(readField(order, "side") || ""),
@@ -397,6 +404,7 @@ function normalizeScores(scores) {
     return scores.map((score) => ({
       playerId: optionalNumber(readField(score, "playerId")),
       playerToken: String(readField(score, "playerToken") || readField(score, "token") || ""),
+      playerName: String(readField(score, "playerName") || ""),
       score: readNumber(score, "score", 0),
     }));
   }
@@ -404,6 +412,7 @@ function normalizeScores(scores) {
   if (scores && typeof scores === "object") {
     return Object.entries(scores).map(([playerToken, score]) => ({
       playerToken,
+      playerName: "",
       score: Number(score) || 0,
     }));
   }

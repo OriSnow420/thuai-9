@@ -120,7 +120,7 @@ public class ProtocolMessageTests
             TotalTicks = 300,
             Scores =
             [
-                new PlayerScore { PlayerId = 0, Score = 14 },
+                new PlayerScore { PlayerId = 0, PlayerName = "代码A", Score = 14 },
                 new PlayerScore { PlayerId = 1, Score = 9 }
             ]
         });
@@ -128,6 +128,7 @@ public class ProtocolMessageTests
         Assert.Equal(2, gameState.GetProperty("currentDay").GetInt32());
         Assert.Equal(2, gameState.GetProperty("scores").GetArrayLength());
         Assert.Equal(0, gameState.GetProperty("scores")[0].GetProperty("playerId").GetInt32());
+        Assert.Equal("代码A", gameState.GetProperty("scores")[0].GetProperty("playerName").GetString());
 
         var news = ParseJson(new NewsBroadcastMessage
         {

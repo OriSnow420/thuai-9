@@ -24,11 +24,15 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://thuai9:${POSTGRES_PASSWORD}@postgres/thuai9
       JWT_SECRET: ${JWT_SECRET}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_NAME: ${ADMIN_NAME}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       UPLOAD_DIR: /workspace/submission-data/uploads
       ARTIFACT_DIR: /workspace/submission-data/artifacts
+      LIVE_SERVER_DATA_DIR: /workspace/data
     volumes:
       - ./submission-data:/workspace/submission-data
+      - ./data:/workspace/data:ro
     depends_on:
       postgres:
         condition: service_healthy

@@ -22,12 +22,14 @@ auto envValue(const char* key) -> std::optional<std::string> {
 struct RuntimeConfig {
   std::string token = "player1";
   std::string serverUrl = "ws://localhost:14514";
+  std::optional<std::string> playerName = std::nullopt;
 };
 
 auto resolveConfig(int argc, char** argv) -> std::optional<RuntimeConfig> {
   RuntimeConfig config;
   bool hasTokenEnv = false;
   bool hasServerEnv = false;
+  bool hasPlayerNameEnv = false;
 
   if (const auto token = envValue("TOKEN"); token.has_value()) {
     config.token = *token;
@@ -37,14 +39,21 @@ auto resolveConfig(int argc, char** argv) -> std::optional<RuntimeConfig> {
     config.serverUrl = *server;
     hasServerEnv = true;
   }
+  if (const auto playerName = envValue("PLAYER_NAME");
+      playerName.has_value() && !playerName->empty()) {
+    config.playerName = *playerName;
+    hasPlayerNameEnv = true;
+  }
 
-  if (hasTokenEnv && hasServerEnv) {
+  if (hasTokenEnv && hasServerEnv && hasPlayerNameEnv) {
     return config;
   }
 
   cxxopts::Options options("agent", "THUAI-9 C++ agent");
   options.add_options()("token", "Agent token", cxxopts::value<std::string>())(
       "server", "WebSocket server URL", cxxopts::value<std::string>())(
+      "player-name", "Player display name",
+      cxxopts::value<std::string>())(
       "h,help", "Show help");
 
   const auto result = options.parse(argc, argv);
@@ -58,6 +67,12 @@ auto resolveConfig(int argc, char** argv) -> std::optional<RuntimeConfig> {
   }
   if (!hasServerEnv && result.contains("server")) {
     config.serverUrl = result["server"].as<std::string>();
+  }
+  if (!hasPlayerNameEnv && result.contains("player-name")) {
+    const auto playerName = result["player-name"].as<std::string>();
+    if (!playerName.empty()) {
+      config.playerName = playerName;
+    }
   }
 
   return config;
@@ -89,7 +104,8 @@ auto main(int argc, char** argv) -> int {
   spdlog::info("Starting THUAI agent for token={} server={}",
                maskToken(config->token), config->serverUrl);
 
-  auto agent = createAgent(config->token, config->serverUrl);
+  auto agent = createAgent(config->token, config->serverUrl,
+                           config->playerName);
   agent->run();
   return 0;
 }

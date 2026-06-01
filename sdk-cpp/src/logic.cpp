@@ -147,7 +147,9 @@ class MyAgent final : public thuai::Agent {
 
 }  // namespace
 
-auto createAgent(std::string token, std::string serverUrl)
+auto createAgent(std::string token, std::string serverUrl,
+                 std::optional<std::string> playerName)
     -> std::unique_ptr<thuai::Agent> {
-  return std::make_unique<MyAgent>(std::move(token), std::move(serverUrl));
+  return std::make_unique<MyAgent>(std::move(token), std::move(serverUrl),
+                                   std::move(playerName));
 }

@@ -268,7 +268,7 @@ function renderScoreboard(state) {
   node.innerHTML = state.game.scores
     .map((score) => `
       <div class="score-row">
-        <span>${escapeHtml(playerDisplayName(state, score.playerId, score.playerToken))}</span>
+        <span>${escapeHtml(playerDisplayName(state, score.playerId, score.playerToken, score.playerName))}</span>
         <strong>${escapeHtml(score.score)}</strong>
       </div>
     `)
@@ -449,13 +449,13 @@ function eventMarkup(event, isNew, state) {
 function eventPlayerMarkup(event, state) {
   const parts = [];
   if (event.playerId >= 0 || event.playerToken) {
-    parts.push(playerDisplayName(state, event.playerId, event.playerToken));
+    parts.push(playerDisplayName(state, event.playerId, event.playerToken, event.playerName));
   }
   if (event.buyerPlayerId >= 0 || event.buyerToken) {
-    parts.push(`买 ${playerDisplayName(state, event.buyerPlayerId, event.buyerToken)}`);
+    parts.push(`买 ${playerDisplayName(state, event.buyerPlayerId, event.buyerToken, event.buyerPlayerName)}`);
   }
   if (event.sellerPlayerId >= 0 || event.sellerToken) {
-    parts.push(`卖 ${playerDisplayName(state, event.sellerPlayerId, event.sellerToken)}`);
+    parts.push(`卖 ${playerDisplayName(state, event.sellerPlayerId, event.sellerToken, event.sellerPlayerName)}`);
   }
   if (!parts.length) return "";
   return `<span class="event-player">${escapeHtml(parts.join(" · "))}</span>`;
@@ -561,7 +561,7 @@ function renderPlayerComparison(state) {
   node.innerHTML = summaries
     .map((player) => `
       <button type="button" class="comparison-card comparison-link" data-player-key="${escapeAttribute(player.playerId >= 0 ? player.playerId : player.token)}">
-        <h3>${escapeHtml(playerDisplayName(state, player.playerId, player.token))}</h3>
+        <h3>${escapeHtml(playerDisplayName(state, player.playerId, player.token, player.playerName))}</h3>
         <div class="comparison-stats">
           <span>NAV <strong>${formatNumber(player.nav)}</strong></span>
           <span>成交 <strong>${formatNumber(player.tradeCount ?? player.monthlyTradeCount ?? 0)}</strong></span>
@@ -667,7 +667,7 @@ function renderSettlement(state) {
     ${rows
       .map((player) => `
         <div class="settlement-row">
-          <span>${escapeHtml(playerDisplayName(state, player.playerId, player.token))}</span>
+          <span>${escapeHtml(playerDisplayName(state, player.playerId, player.token, player.playerName))}</span>
           <strong>NAV ${formatNumber(player.nav)}</strong>
           <span>${formatNumber(player.tradeCount)} 笔成交</span>
         </div>

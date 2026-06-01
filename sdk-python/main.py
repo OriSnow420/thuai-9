@@ -25,14 +25,15 @@ def parse_args():
     parser.add_argument(
         "--server", default=os.environ.get("SERVER", "ws://localhost:14514")
     )
+    parser.add_argument("--player-name", default=os.environ.get("PLAYER_NAME"))
     return parser.parse_args()
 
 
 class MyAgent(Agent):
     """Minimal example agent for a complete two-player match."""
 
-    def __init__(self, token: str, server_url: str):
-        super().__init__(token, server_url)
+    def __init__(self, token: str, server_url: str, player_name: str | None = None):
+        super().__init__(token, server_url, player_name=player_name)
         self._last_order_tick = -999
 
     async def on_game_state(self, state: GameState):
@@ -79,7 +80,7 @@ async def main():
     args = parse_args()
     token = args.token
     server = args.server
-    agent = MyAgent(token=token, server_url=server)
+    agent = MyAgent(token=token, server_url=server, player_name=args.player_name)
     await agent.run()
 
 

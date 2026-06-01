@@ -30,6 +30,7 @@ class MatchAgent:
     team_id: int
     image_ref: str
     token: str
+    player_name: str | None = None
 
 
 def _redact_token(token: str) -> str:
@@ -55,6 +56,7 @@ def _spawn_agent(client, match_id: int, agent: MatchAgent):
         environment={
             "TOKEN": agent.token,
             "SERVER": settings.live_server_url,
+            "PLAYER_NAME": agent.player_name or "",
         },
         network=settings.live_server_network,
         mem_limit="256m",
@@ -146,7 +148,7 @@ def _resolve_host_path(client, container_path: str) -> str:
     return os.path.normpath(os.path.join(best_source, relative_path))
 
 
-def _start_live_server(client, tokens: list[str]):
+def _start_live_server(client, agents: list[MatchAgent], live_server_image: str | None = None):
     if not settings.restart_live_server:
         return None
 
@@ -156,20 +158,30 @@ def _start_live_server(client, tokens: list[str]):
     except Exception:
         pass
 
+    tokens = [agent.token for agent in agents]
+    player_names = {
+        agent.token: agent.player_name
+        for agent in agents
+        if agent.player_name
+    }
     logger.info(
-        "Starting live game server container %s with %d players",
+        "Starting live game server container %s with %d players using image %s",
         settings.live_server_container,
         len(tokens),
+        live_server_image or settings.live_server_image,
     )
     config_dir = _prepare_live_server_config_dir()
     data_dir = _prepare_live_server_data_dir()
     host_config_path = _resolve_host_path(client, os.path.join(config_dir, "config.json"))
     host_data_dir = _resolve_host_path(client, data_dir)
     server = client.containers.run(
-        image=settings.live_server_image,
+        image=live_server_image or settings.live_server_image,
         name=settings.live_server_container,
         entrypoint=["./server"],
-        environment={"TOKENS": ",".join(tokens)},
+        environment={
+            "TOKENS": ",".join(tokens),
+            "PLAYER_NAMES_JSON": json.dumps(player_names, ensure_ascii=False),
+        },
         labels={
             "thuai9.managed": "live-server",
         },
@@ -275,7 +287,9 @@ def _read_container_log(container) -> str:
 
 
 def run_match(
-    match_id: int, agents: list[MatchAgent]
+    match_id: int,
+    agents: list[MatchAgent],
+    live_server_image: str | None = None,
 ) -> tuple[dict[int, int] | None, str, dict[int, str]]:
     """Run all ready submissions in one live arena game.
 
@@ -306,8 +320,7 @@ def run_match(
         }
 
     try:
-        agent_tokens = [agent.token for agent in agents]
-        server = _start_live_server(client, agent_tokens)
+        server = _start_live_server(client, agents, live_server_image=live_server_image)
 
         # Give the WebSocket listener a short moment to bind after start.
         time.sleep(2)

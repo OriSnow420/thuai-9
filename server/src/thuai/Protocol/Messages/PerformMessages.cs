@@ -9,6 +9,9 @@ public record HelloMessage : PerformMessage
     [JsonPropertyName("role")]
     public string Role { get; init; } = "";
 
+    [JsonPropertyName("playerName")]
+    public string? PlayerName { get; init; }
+
     [JsonPropertyName("adminSecret")]
     public string? AdminSecret { get; init; }
 }

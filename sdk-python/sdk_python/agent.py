@@ -44,9 +44,15 @@ logger = logging.getLogger("thuai")
 class Agent:  # pylint: disable=too-many-instance-attributes
     """Stateful websocket agent that sends actions and tracks server snapshots."""
 
-    def __init__(self, token: str, server_url: str = "ws://localhost:14514") -> None:
+    def __init__(
+        self,
+        token: str,
+        server_url: str = "ws://localhost:14514",
+        player_name: Optional[str] = None,
+    ) -> None:
         self.token = token
         self.server_url = server_url
+        self.player_name = player_name.strip() if player_name and player_name.strip() else None
         self._ws: Optional[ClientConnection] = None
 
         # Current state is refreshed automatically as snapshots arrive.
@@ -62,13 +68,14 @@ class Agent:  # pylint: disable=too-many-instance-attributes
 
         self._ws = await connect(self.server_url)
         logger.info("Connected to %s", self.server_url)
-        await self._send(
-            {
-                "messageType": "HELLO",
-                "token": self.token,
-                "role": "player",
-            }
-        )
+        hello: OutgoingMessage = {
+            "messageType": "HELLO",
+            "token": self.token,
+            "role": "player",
+        }
+        if self.player_name:
+            hello["playerName"] = self.player_name
+        await self._send(hello)
 
     async def disconnect(self) -> None:
         """Close the websocket connection if it is currently open."""

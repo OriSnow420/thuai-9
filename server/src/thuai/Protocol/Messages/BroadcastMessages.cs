@@ -30,6 +30,9 @@ public record PlayerScore
     [JsonPropertyName("playerId")]
     public int PlayerId { get; init; }
 
+    [JsonPropertyName("playerName")]
+    public string? PlayerName { get; init; }
+
     [JsonPropertyName("score")]
     public long Score { get; init; }
 }

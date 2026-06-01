@@ -3,7 +3,7 @@ import logging
 import os
 import random
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, inspect, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from compiler import compile_submission
 from config import settings
-from runner import MatchAgent, cleanup_runtime_containers, run_match
+from runner import GAME_TIMEOUT_SECONDS, MatchAgent, cleanup_runtime_containers, run_match
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ engine = create_async_engine(settings.database_url, echo=False)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 # Import models after engine is set up
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase
 
 # Keep at most this many match-log rows per submission so a long-lived arena
@@ -30,6 +30,13 @@ LOG_RETENTION_PER_SUBMISSION = 50
 
 class Base(DeclarativeBase):
     pass
+
+
+class Team(Base):
+    __tablename__ = "teams"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(64), nullable=False)
+    email = Column(String(255), nullable=False)
 
 
 class Submission(Base):
@@ -87,6 +94,47 @@ class SubmissionMatchLog(Base):
     team_id = Column(Integer, nullable=False)
     log = Column(Text, nullable=False, default="")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Competition(Base):
+    __tablename__ = "competitions"
+    __table_args__ = (
+        Index("ix_competitions_status_scheduled", "status", "scheduled_at"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(128), nullable=False)
+    description = Column(Text)
+    status = Column(String(16), nullable=False, default="scheduled", server_default=text("'scheduled'"))
+    scheduled_at = Column(DateTime(timezone=True), nullable=False)
+    submission_deadline = Column(DateTime(timezone=True))
+    live_server_image = Column(Text, nullable=False)
+    created_by_email = Column(String(255), nullable=False)
+    created_by_name = Column(String(64), nullable=False)
+    match_id = Column(Integer, ForeignKey("matches.id", ondelete="SET NULL"))
+    error_log = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    finished_at = Column(DateTime(timezone=True))
+
+
+class CompetitionSlot(Base):
+    __tablename__ = "competition_slots"
+    __table_args__ = (
+        UniqueConstraint("competition_id", "team_id", name="uq_competition_slots_competition_team"),
+        Index("ix_competition_slots_competition", "competition_id"),
+        Index("ix_competition_slots_team", "team_id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    competition_id = Column(Integer, ForeignKey("competitions.id", ondelete="CASCADE"), nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    selected_submission_id = Column(Integer, ForeignKey("submissions.id", ondelete="SET NULL"))
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=func.now(),
+    )
 
 
 os.makedirs(settings.artifact_dir, exist_ok=True)
@@ -161,6 +209,115 @@ async def recover_inflight_matches(db: AsyncSession) -> None:
         )
     )
     await db.commit()
+
+
+def _effective_deadline(competition: Competition) -> datetime:
+    return competition.submission_deadline or competition.scheduled_at
+
+
+async def _next_competition_guard_window(db: AsyncSession) -> datetime | None:
+    result = await db.execute(
+        select(Competition.scheduled_at)
+        .where(Competition.status == "scheduled")
+        .order_by(Competition.scheduled_at.asc(), Competition.id.asc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _schedule_due_competition(db: AsyncSession) -> bool:
+    now = datetime.now(timezone.utc)
+    result = await db.execute(
+        select(Competition)
+        .where(
+            Competition.status == "scheduled",
+            Competition.scheduled_at <= now,
+        )
+        .order_by(Competition.scheduled_at.asc(), Competition.id.asc())
+        .limit(1)
+    )
+    competition = result.scalar_one_or_none()
+    if competition is None:
+        return False
+
+    slot_rows = await db.execute(
+        select(CompetitionSlot, Submission)
+        .join(Submission, Submission.id == CompetitionSlot.selected_submission_id, isouter=True)
+        .where(CompetitionSlot.competition_id == competition.id)
+        .order_by(CompetitionSlot.id.asc())
+    )
+
+    ready_entries: list[tuple[CompetitionSlot, Submission]] = []
+    skipped: list[str] = []
+    for slot, submission in slot_rows.all():
+        if slot.selected_submission_id is None:
+            continue
+        if submission is None:
+            skipped.append(f"team {slot.team_id}: 选中的提交不存在")
+            continue
+        if submission.team_id != slot.team_id:
+            skipped.append(f"team {slot.team_id}: 选中的提交不属于该队伍")
+            continue
+        if submission.status != "ready" or not submission.artifact_path:
+            skipped.append(f"team {slot.team_id}: 提交 #{submission.id} 当前不是可运行的 ready 状态")
+            continue
+        ready_entries.append((slot, submission))
+
+    if not ready_entries:
+        competition.status = "error"
+        competition.error_log = "\n".join(
+            ["赛事到时后没有可运行的 ready 提交。", *skipped]
+        ).strip()
+        competition.finished_at = now
+        await db.commit()
+        logger.warning("Competition %d could not start: no ready participants", competition.id)
+        return True
+
+    first_submission = ready_entries[0][1]
+    second_submission = ready_entries[1][1] if len(ready_entries) >= 2 else first_submission
+    match = Match(
+        mode="event",
+        submission_a_id=first_submission.id,
+        submission_b_id=second_submission.id,
+        status="pending",
+        scheduled_at=competition.scheduled_at,
+    )
+    db.add(match)
+    await db.flush()
+
+    db.add_all([
+        MatchParticipant(
+            match_id=match.id,
+            submission_id=submission.id,
+            team_id=slot.team_id,
+            player_token=secrets.token_urlsafe(24),
+        )
+        for slot, submission in ready_entries
+    ])
+
+    competition.match_id = match.id
+    competition.status = "running"
+    competition.error_log = "\n".join(skipped).strip() or None
+    await db.commit()
+    logger.info(
+        "Scheduled competition %d into match %d with submissions=%s",
+        competition.id,
+        match.id,
+        [submission.id for _, submission in ready_entries],
+    )
+    return True
+
+
+async def competition_scheduler_loop():
+    while True:
+        try:
+            async with AsyncSessionLocal() as db:
+                while await _schedule_due_competition(db):
+                    pass
+        except Exception:
+            logger.exception("competition_scheduler_loop error")
+
+        await asyncio.sleep(10)
 
 
 async def compile_loop():
@@ -252,6 +409,14 @@ async def arena_loop():
                 if active_result.scalar_one_or_none() is not None:
                     await asyncio.sleep(30)
                     continue
+
+                next_competition_time = await _next_competition_guard_window(db)
+                if next_competition_time is not None:
+                    now = datetime.now(timezone.utc)
+                    guard_until = now + timedelta(seconds=GAME_TIMEOUT_SECONDS)
+                    if next_competition_time <= guard_until:
+                        await asyncio.sleep(30)
+                        continue
 
                 # Use the submission explicitly dispatched by each team.
                 result = await db.execute(
@@ -363,7 +528,10 @@ async def match_runner_loop():
         try:
             async with AsyncSessionLocal() as db:
                 result = await db.execute(
-                    select(Match).where(Match.status == "pending").limit(1)
+                    select(Match)
+                    .where(Match.status == "pending")
+                    .order_by(Match.scheduled_at.asc(), Match.id.asc())
+                    .limit(1)
                 )
                 match = result.scalar_one_or_none()
 
@@ -393,6 +561,7 @@ async def match_runner_loop():
                                 team_id=row.team_id,
                                 image_ref=submissions[row.submission_id].artifact_path or "",
                                 token=row.player_token,
+                                player_name=submissions[row.submission_id].name or "",
                             )
                             for row in participant_rows
                             if row.submission_id in submissions
@@ -411,20 +580,28 @@ async def match_runner_loop():
                                 team_id=submissions[match.submission_a_id].team_id,
                                 image_ref=submissions[match.submission_a_id].artifact_path or "",
                                 token=secrets.token_urlsafe(24),
+                                player_name=submissions[match.submission_a_id].name or "",
                             ),
                             MatchAgent(
                                 submission_id=submissions[match.submission_b_id].id,
                                 team_id=submissions[match.submission_b_id].team_id,
                                 image_ref=submissions[match.submission_b_id].artifact_path or "",
                                 token=secrets.token_urlsafe(24),
+                                player_name=submissions[match.submission_b_id].name or "",
                             ),
                         ]
+
+                    competition_result = await db.execute(
+                        select(Competition).where(Competition.match_id == match.id).limit(1)
+                    )
+                    competition = competition_result.scalar_one_or_none()
 
                     scores, error_log, agent_logs = await asyncio.get_running_loop().run_in_executor(
                         None,
                         run_match,
                         match.id,
                         agents,
+                        competition.live_server_image if competition is not None else None,
                     )
 
                     score_a = scores.get(match.submission_a_id) if scores is not None else None
@@ -448,6 +625,20 @@ async def match_runner_loop():
                             finished_at=datetime.now(timezone.utc),
                         )
                     )
+
+                    if competition is not None:
+                        combined_error_log = "\n".join(
+                            part for part in [competition.error_log, error_log] if part
+                        ).strip() or None
+                        await db.execute(
+                            update(Competition)
+                            .where(Competition.id == competition.id)
+                            .values(
+                                status="finished" if scores is not None else "error",
+                                error_log=combined_error_log,
+                                finished_at=datetime.now(timezone.utc),
+                            )
+                        )
                     # Match completion is the source of truth for the leaderboard
                     # and the runner loop, so commit it before touching logs.
                     await db.commit()
@@ -522,6 +713,7 @@ async def main():
         await recover_inflight_matches(db)
     await asyncio.gather(
         compile_loop(),
+        competition_scheduler_loop(),
         arena_loop(),
         match_runner_loop(),
     )

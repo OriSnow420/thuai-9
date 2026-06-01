@@ -16,8 +16,10 @@ import {
 import { buildSampleMessages } from "./sample-data.js";
 import { buildReplaySession } from "./replay.js";
 import { describeObserverConnection, normalizeObserverMatch } from "./observer-status.js";
+import { parseSocketMessageData, previewSocketPayload } from "./socket-message.js";
 import {
   applyMessage,
+  applyManagedObserverLiveState,
   applyPlayerMap,
   clearSettlement,
   createInitialState,
@@ -55,6 +57,18 @@ let marketCanvasHandlersBound = false;
 let replaySession = null;
 let replayTimer = null;
 let appliedReplayIndex = -1;
+let inboundMessageChain = Promise.resolve();
+const PLAYER_MAP_POLL_MS = 15000;
+let playerMapTimer = null;
+// Tracks which match the accumulated live runtime state belongs to, so a new
+// match (the evaluator restarts the game server per match) clears the previous
+// match's candles/events/summaries before the new stream is applied.
+let observedMatchId = null;
+// These anchors must be initialized before any auto-connect path can receive
+// GAME_STATE messages, otherwise managed spectator pages can hit a TDZ error
+// during startup.
+let lastLiveMatchMonth = null;
+let lastLiveMatchTick = null;
 
 initParticles();
 bindControls();
@@ -268,18 +282,6 @@ function isPublicSpectatorPage() {
   return window.location.pathname.startsWith("/spectator/");
 }
 
-const PLAYER_MAP_POLL_MS = 15000;
-let playerMapTimer = null;
-// Tracks which match the accumulated live runtime state belongs to, so a new
-// match (the evaluator restarts the game server per match) clears the previous
-// match's candles/events/summaries before the new stream is applied.
-let observedMatchId = null;
-// Last live GAME_STATE position seen on a managed-observer socket. A new match's
-// stream restarts at month 1 / a small tick, so a backward step is the earliest
-// new-match signal — it fires before the slower player-map poll reports a new id.
-let lastLiveMatchMonth = null;
-let lastLiveMatchTick = null;
-
 function isManagedObserverSession() {
   return isPublicSpectatorPage() && state.connection.role === "observer" && !state.replay.enabled;
 }
@@ -345,8 +347,76 @@ function maybeResetForNewLiveMatch(message) {
   lastLiveMatchTick = tick;
 }
 
+async function handleSocketMessage(event) {
+  let parsed;
+  try {
+    parsed = await parseSocketMessageData(event.data);
+  } catch (error) {
+    console.error("Failed to parse WebSocket message", error, event.data);
+    pushEvent(state, {
+      kind: "error",
+      title: "消息解析失败",
+      detail: formatSocketParseError(error, event.data),
+    });
+    renderApp(state);
+    return;
+  }
+
+  try {
+    maybeResetForNewLiveMatch(parsed.message);
+    applyMessage(state, parsed.message);
+  } catch (error) {
+    console.error("Failed to apply WebSocket message", error, parsed.message);
+    pushEvent(state, {
+      kind: "error",
+      title: "消息处理失败",
+      detail: formatSocketProcessingError(parsed, error),
+    });
+  }
+
+  renderApp(state);
+}
+
+function queueSocketMessage(event) {
+  inboundMessageChain = inboundMessageChain
+    .then(() => handleSocketMessage(event))
+    .catch((error) => {
+      console.error("Unexpected socket message pipeline failure", error);
+    });
+}
+
+function formatSocketParseError(error, payload) {
+  const detail = [error?.message || "unknown error"];
+  const preview = previewSocketPayload(payload);
+  if (preview) {
+    detail.push(`payload=${preview}`);
+  }
+  return detail.join(" | ");
+}
+
+function formatSocketProcessingError(parsed, error) {
+  const detail = [
+    `messageType=${parsed?.message?.messageType || "-"}`,
+    error?.message || "unknown error",
+  ];
+  const preview = previewSocketPayload(parsed?.raw);
+  if (preview) {
+    detail.push(`payload=${preview}`);
+  }
+  return detail.join(" | ");
+}
+
 async function fetchPlayerMap() {
   try {
+    const liveStateResponse = await fetch("/api/matches/current/live-state", { credentials: "omit" });
+    if (liveStateResponse.ok) {
+      const liveState = await liveStateResponse.json();
+      applyManagedObserverLiveState(state, liveState);
+      applyManagedObserverMatch(liveState);
+      renderApp(state);
+      return;
+    }
+
     const res = await fetch("/api/matches/current/player-map", { credentials: "omit" });
     if (!res.ok) return;
     const data = await res.json();
@@ -368,6 +438,7 @@ function connect() {
   stopReplayPlayback();
   replaySession = null;
   appliedReplayIndex = -1;
+  inboundMessageChain = Promise.resolve();
   setReplayPatch(state, {
     enabled: false,
     loaded: false,
@@ -433,20 +504,7 @@ function connect() {
     renderApp(state);
   });
 
-  ws.addEventListener("message", (event) => {
-    try {
-      const message = JSON.parse(event.data);
-      maybeResetForNewLiveMatch(message);
-      applyMessage(state, message);
-    } catch (error) {
-      pushEvent(state, {
-        kind: "error",
-        title: "消息解析失败",
-        detail: error.message,
-      });
-    }
-    renderApp(state);
-  });
+  ws.addEventListener("message", queueSocketMessage);
 
   ws.addEventListener("error", () => {
     handleSocketError(new Error("WebSocket error"));
@@ -839,7 +897,7 @@ function showSummaryDetail(day) {
     <div class="detail-grid">
       ${(summary.players || []).map((player) => `
         <section class="detail-section">
-          <h3>${escapeHtml(playerDisplayName(state, player.playerId, player.token))}</h3>
+          <h3>${escapeHtml(playerDisplayName(state, player.playerId, player.token, player.playerName))}</h3>
           <p>NAV：${escapeHtml(player.nav)}</p>
           <p>Mora：${escapeHtml(player.mora)}</p>
           <p>Gold：${escapeHtml(player.gold)}</p>
@@ -864,7 +922,7 @@ function showPlayerDetail(playerKey) {
   if (!body || !title || !eyebrow) return;
 
   eyebrow.textContent = "操盘手";
-  title.textContent = `${playerDisplayName(state, player.playerId, player.token)} 摘要`;
+  title.textContent = `${playerDisplayName(state, player.playerId, player.token, player.playerName)} 摘要`;
   body.innerHTML = `
     <section class="detail-section">
       <h3>当前状态</h3>

@@ -108,7 +108,8 @@ public partial class AgentServer
             AfterPlayerConnectEvent?.Invoke(this, new AfterPlayerConnectEventArgs
             {
                 SocketId = socketId,
-                Token = message.Token
+                Token = message.Token,
+                PlayerName = null
             });
             Log.Information("Player identified: {Token} on socket {SocketId}", message.Token, socketId);
         }
@@ -175,7 +176,8 @@ public partial class AgentServer
                 AfterPlayerConnectEvent?.Invoke(this, new AfterPlayerConnectEventArgs
                 {
                     SocketId = socketId,
-                    Token = hello.Token
+                    Token = hello.Token,
+                    PlayerName = hello.PlayerName
                 });
                 Log.Information("Player connected via HELLO: {Token} on socket {SocketId}",
                     hello.Token, socketId);

@@ -1,12 +1,15 @@
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect, select, text, update
 
+from app.auth import hash_password
+from app.config import settings
 from app.database import AsyncSessionLocal, Base, engine
-from app.models import Submission
-from app.routers import leaderboard, matches, submissions, teams
+from app.models import Submission, Team
+from app.routers import competitions, leaderboard, matches, submissions, teams
 
 
 async def ensure_schema() -> None:
@@ -95,9 +98,55 @@ async def ensure_schema() -> None:
         await session.commit()
 
 
+async def ensure_admin_team() -> None:
+    """Bind the env-configured admin identity to a real Team row so it can use
+    the same submission pipeline as normal accounts without losing admin-only
+    privileges."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Team)
+            .where((Team.email == settings.admin_email) | (Team.name == settings.admin_name))
+            .order_by(Team.id.asc())
+        )
+        matches = result.scalars().all()
+
+        if len(matches) > 1:
+            raise RuntimeError(
+                "管理员邮箱/名称与多个现有账号冲突，请先清理 teams 表中的冲突记录后再启动"
+            )
+
+        if not matches:
+            session.add(
+                Team(
+                    name=settings.admin_name,
+                    email=settings.admin_email,
+                    password_hash=hash_password(settings.admin_password),
+                    game_token=str(uuid.uuid4()),
+                )
+            )
+            await session.commit()
+            return
+
+        admin_team = matches[0]
+        changed = False
+        if admin_team.name != settings.admin_name:
+            admin_team.name = settings.admin_name
+            changed = True
+        if admin_team.email != settings.admin_email:
+            admin_team.email = settings.admin_email
+            changed = True
+        if not admin_team.game_token:
+            admin_team.game_token = str(uuid.uuid4())
+            changed = True
+
+        if changed:
+            await session.commit()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await ensure_schema()
+    await ensure_admin_team()
     yield
 
 
@@ -114,6 +163,7 @@ app.add_middleware(
 app.include_router(teams.router, tags=["teams"])
 app.include_router(submissions.router, prefix="/submissions", tags=["submissions"])
 app.include_router(matches.router, prefix="/matches", tags=["matches"])
+app.include_router(competitions.router, prefix="/competitions", tags=["competitions"])
 app.include_router(leaderboard.router, prefix="/leaderboard", tags=["leaderboard"])
 
 

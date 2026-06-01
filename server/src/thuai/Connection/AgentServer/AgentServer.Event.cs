@@ -14,6 +14,7 @@ public partial class AgentServer
     {
         public Guid SocketId { get; init; }
         public string Token { get; init; } = "";
+        public string? PlayerName { get; init; }
     }
 
     public class AfterPlayerDisconnectEventArgs : EventArgs

@@ -1,7 +1,14 @@
 const state = {
   authMode: "login",
+  workspaceTab: "code",
   accessToken: localStorage.getItem("thuai9AccessToken") || "",
   gameToken: localStorage.getItem("thuai9GameToken") || "",
+  currentUser: null,
+  submissions: [],
+  competitions: [],
+  competitionDetail: null,
+  selectedCompetitionId: null,
+  adminAccounts: [],
 };
 
 const logPollers = new Map();
@@ -12,27 +19,74 @@ const els = {
   authStatus: document.getElementById("authStatus"),
   teamNameField: document.getElementById("teamNameField"),
   sessionPanel: document.getElementById("sessionPanel"),
+  sessionDisplayName: document.getElementById("sessionDisplayName"),
+  sessionEmail: document.getElementById("sessionEmail"),
+  sessionRole: document.getElementById("sessionRole"),
+  gameTokenWrap: document.getElementById("gameTokenWrap"),
   gameToken: document.getElementById("gameToken"),
   uploadForm: document.getElementById("uploadForm"),
   uploadStatus: document.getElementById("uploadStatus"),
   submissionsList: document.getElementById("submissionsList"),
   leaderboardBody: document.getElementById("leaderboardBody"),
+  codeWorkspace: document.getElementById("codeWorkspace"),
+  competitionsWorkspace: document.getElementById("competitionsWorkspace"),
+  teamOnlyNotice: document.getElementById("teamOnlyNotice"),
+  teamWorkspace: document.getElementById("teamWorkspace"),
+  competitionAccessNotice: document.getElementById("competitionAccessNotice"),
+  competitionWorkspace: document.getElementById("competitionWorkspace"),
+  competitionsList: document.getElementById("competitionsList"),
+  competitionDetail: document.getElementById("competitionDetail"),
+  refreshCompetitions: document.getElementById("refreshCompetitions"),
+  competitionForm: document.getElementById("competitionForm"),
+  competitionFormStatus: document.getElementById("competitionFormStatus"),
+  eligibleTeamsList: document.getElementById("eligibleTeamsList"),
 };
 
 document.querySelectorAll("[data-auth-tab]").forEach((button) => {
   button.addEventListener("click", () => setAuthMode(button.dataset.authTab));
 });
 
+document.querySelectorAll("[data-workspace-tab]").forEach((button) => {
+  button.addEventListener("click", () => setWorkspaceTab(button.dataset.workspaceTab));
+});
+
 document.getElementById("logoutButton")?.addEventListener("click", logout);
 document.getElementById("refreshLeaderboard")?.addEventListener("click", loadLeaderboard);
 document.getElementById("refreshSubmissions")?.addEventListener("click", loadSubmissions);
+els.refreshCompetitions?.addEventListener("click", async () => {
+  if (state.currentUser?.role === "admin") {
+    await loadAdminAccounts();
+  }
+  await loadCompetitions({ refreshDetail: true });
+});
 els.authForm?.addEventListener("submit", submitAuth);
 els.uploadForm?.addEventListener("submit", submitCode);
+els.competitionForm?.addEventListener("submit", submitCompetition);
 
-renderSession();
-loadLeaderboard();
-if (state.accessToken) {
-  loadSubmissions();
+bootstrap();
+
+function canUseCodeWorkspace() {
+  return state.currentUser?.role === "team" || state.currentUser?.role === "admin";
+}
+
+async function bootstrap() {
+  renderSession();
+  renderWorkspace();
+  loadLeaderboard();
+  if (!state.accessToken) {
+    return;
+  }
+  try {
+    await loadCurrentUser();
+    await Promise.all([
+      loadCompetitions({ refreshDetail: true }),
+      canUseCodeWorkspace() ? loadSubmissions() : Promise.resolve(renderSubmissions([])),
+      state.currentUser?.role === "admin" ? loadAdminAccounts() : Promise.resolve(renderAdminAccounts([])),
+    ]);
+  } catch (error) {
+    logout(false);
+    setStatus(els.authStatus, error.message, "error");
+  }
 }
 
 function setAuthMode(mode) {
@@ -47,6 +101,43 @@ function setAuthMode(mode) {
   }
   els.authSubmit.textContent = state.authMode === "register" ? "注册" : "登录";
   setStatus(els.authStatus, "");
+}
+
+function setWorkspaceTab(tab) {
+  const canUseCode = canUseCodeWorkspace();
+  if (tab === "code" && !canUseCode) {
+    state.workspaceTab = "competitions";
+  } else {
+    state.workspaceTab = tab === "competitions" ? "competitions" : "code";
+  }
+  renderWorkspace();
+}
+
+function renderWorkspace() {
+  const canUseCode = canUseCodeWorkspace();
+  if (!canUseCode && state.workspaceTab === "code") {
+    state.workspaceTab = "competitions";
+  }
+
+  document.querySelectorAll("[data-workspace-tab]").forEach((button) => {
+    const tab = button.dataset.workspaceTab;
+    const enabled = tab !== "code" || canUseCode;
+    button.disabled = !enabled;
+    button.classList.toggle("is-active", tab === state.workspaceTab);
+    button.classList.toggle("is-hidden", tab === "code" && !canUseCode && Boolean(state.currentUser));
+  });
+
+  els.codeWorkspace?.classList.toggle("is-hidden", state.workspaceTab !== "code");
+  els.competitionsWorkspace?.classList.toggle("is-hidden", state.workspaceTab !== "competitions");
+
+  const loggedIn = Boolean(state.currentUser);
+  els.teamOnlyNotice?.classList.toggle("is-hidden", !loggedIn || canUseCode);
+  els.teamWorkspace?.classList.toggle("is-hidden", !loggedIn || !canUseCode);
+
+  const showCompetitionWorkspace = loggedIn;
+  els.competitionAccessNotice?.classList.toggle("is-hidden", showCompetitionWorkspace);
+  els.competitionWorkspace?.classList.toggle("is-hidden", !showCompetitionWorkspace);
+  els.competitionForm?.classList.toggle("is-hidden", state.currentUser?.role !== "admin");
 }
 
 async function submitAuth(event) {
@@ -71,18 +162,73 @@ async function submitAuth(event) {
     state.gameToken = json.game_token || "";
     localStorage.setItem("thuai9AccessToken", state.accessToken);
     localStorage.setItem("thuai9GameToken", state.gameToken);
-    setStatus(els.authStatus, "登录成功", "ok");
+    state.currentUser = buildCurrentUser(json);
     renderSession();
-    loadSubmissions();
+    renderWorkspace();
+    setStatus(els.authStatus, "登录成功", "ok");
+
+    if (!state.currentUser) {
+      await loadCurrentUser();
+    }
+    if (canUseCodeWorkspace()) {
+      await loadSubmissions();
+    }
+    if (state.currentUser?.role === "admin") {
+      await loadAdminAccounts();
+    } else {
+      renderAdminAccounts([]);
+    }
+    await loadCompetitions({ refreshDetail: true });
   } catch (error) {
     setStatus(els.authStatus, error.message, "error");
   }
 }
 
+function buildCurrentUser(json) {
+  if (!json || !json.role || !json.display_name || !json.email) {
+    return null;
+  }
+  return {
+    role: String(json.role),
+    id: json.id ?? null,
+    display_name: String(json.display_name),
+    email: String(json.email),
+    game_token: String(json.game_token || ""),
+  };
+}
+
+async function loadCurrentUser() {
+  const json = await requestJson("/api/me", {
+    headers: { Authorization: `Bearer ${state.accessToken}` },
+  });
+  state.currentUser = {
+    role: json.role,
+    id: json.id ?? null,
+    display_name: json.display_name,
+    email: json.email,
+    game_token: json.game_token || "",
+  };
+  state.gameToken = state.currentUser.game_token;
+  localStorage.setItem("thuai9GameToken", state.gameToken);
+  renderSession();
+  renderWorkspace();
+}
+
+function renderSession() {
+  const loggedIn = Boolean(state.accessToken && state.currentUser);
+  els.sessionPanel?.classList.toggle("is-hidden", !loggedIn);
+  els.sessionDisplayName.textContent = loggedIn ? state.currentUser.display_name : "-";
+  els.sessionEmail.textContent = loggedIn ? state.currentUser.email : "-";
+  els.sessionRole.textContent = loggedIn ? (state.currentUser.role === "admin" ? "管理员" : "队伍账号") : "-";
+  els.gameToken.textContent = loggedIn ? (state.gameToken || "-") : "-";
+  const showToken = loggedIn && canUseCodeWorkspace();
+  els.gameTokenWrap?.classList.toggle("is-hidden", !showToken);
+}
+
 async function submitCode(event) {
   event.preventDefault();
-  if (!state.accessToken) {
-    setStatus(els.uploadStatus, "请先登录。", "error");
+  if (!state.accessToken || !canUseCodeWorkspace()) {
+    setStatus(els.uploadStatus, "请先登录一个可提交代码的账号。", "error");
     return;
   }
 
@@ -120,25 +266,32 @@ async function submitCode(event) {
       body: form,
     });
     els.uploadForm.reset();
-    setStatus(els.uploadStatus, "上传成功，编译完成后可派遣。", "ok");
+    setStatus(els.uploadStatus, "上传成功，编译完成后可派遣或报名赛事。", "ok");
     await loadSubmissions();
+    if (state.competitionDetail) {
+      renderCompetitionDetail(state.competitionDetail);
+    }
   } catch (error) {
     setStatus(els.uploadStatus, error.message, "error");
   }
 }
 
 async function loadSubmissions() {
-  if (!state.accessToken) {
+  if (!state.accessToken || !canUseCodeWorkspace()) {
     stopAllLogPolling();
-    els.submissionsList.className = "empty";
-    els.submissionsList.textContent = "登录后显示提交记录。";
+    state.submissions = [];
+    renderSubmissions([]);
     return;
   }
   try {
     const submissions = await requestJson("/api/submissions/", {
       headers: { Authorization: `Bearer ${state.accessToken}` },
     });
-    renderSubmissions(submissions);
+    state.submissions = Array.isArray(submissions) ? submissions : [];
+    renderSubmissions(state.submissions);
+    if (state.competitionDetail) {
+      renderCompetitionDetail(state.competitionDetail);
+    }
   } catch (error) {
     els.submissionsList.className = "empty";
     els.submissionsList.textContent = error.message;
@@ -154,19 +307,13 @@ async function loadLeaderboard() {
   }
 }
 
-function renderSession() {
-  const loggedIn = Boolean(state.accessToken);
-  els.sessionPanel?.classList.toggle("is-hidden", !loggedIn);
-  els.gameToken.textContent = state.gameToken || "-";
-}
-
 const MAX_LOG_DISPLAY = 8 * 1024;
 
 function renderSubmissions(submissions) {
   stopAllLogPolling();
   if (!Array.isArray(submissions) || submissions.length === 0) {
     els.submissionsList.className = "empty";
-    els.submissionsList.textContent = "暂无提交记录。";
+    els.submissionsList.textContent = canUseCodeWorkspace() ? "暂无提交记录。" : "当前账号不能查看提交记录。";
     return;
   }
 
@@ -341,7 +488,7 @@ function renderLogsBody(data) {
   if (compileLog) {
     sections.push(`
       <section class="log-section">
-        <h4>编译日志</h4>
+        <h4>编译输出</h4>
         <pre>${escapeHtml(truncate(compileLog))}</pre>
       </section>
     `);
@@ -353,10 +500,10 @@ function renderLogsBody(data) {
         ${data.matches.map((m) => `
           <article class="match-log">
             <header>
-              <strong>对局 #${escapeHtml(String(m.match_id))}</strong>
+              <strong>对局 #${m.match_id}</strong>
               <span>${escapeHtml(m.status)}</span>
-              <span>${escapeHtml(formatTime(m.scheduled_at))}</span>
-              ${m.score !== null && m.score !== undefined ? `<span>得分 ${escapeHtml(String(m.score))}</span>` : ""}
+              <span>${formatTime(m.scheduled_at)}</span>
+              ${m.score !== null && m.score !== undefined ? `<span>得分 ${escapeHtml(formatScore(m.score))}</span>` : ""}
             </header>
             <pre>${m.log ? escapeHtml(truncate(m.log)) : "（无输出）"}</pre>
           </article>
@@ -380,7 +527,373 @@ function truncate(text) {
   const str = String(text || "");
   if (str.length <= MAX_LOG_DISPLAY) return str;
   const dropped = str.length - MAX_LOG_DISPLAY;
-  return `... [前 ${dropped} 字符已省略] ...\n` + str.slice(-MAX_LOG_DISPLAY);
+  return `... [前 ${dropped} 字节已省略] ...\n` + str.slice(-MAX_LOG_DISPLAY);
+}
+
+async function loadAdminAccounts() {
+  if (!state.accessToken || state.currentUser?.role !== "admin") {
+    state.adminAccounts = [];
+    renderAdminAccounts([]);
+    return;
+  }
+  try {
+    const accounts = await requestJson("/api/admin/accounts", {
+      headers: { Authorization: `Bearer ${state.accessToken}` },
+    });
+    state.adminAccounts = Array.isArray(accounts) ? accounts : [];
+    renderAdminAccounts(state.adminAccounts);
+  } catch (error) {
+    els.eligibleTeamsList.className = "checkbox-grid empty";
+    els.eligibleTeamsList.textContent = error.message;
+  }
+}
+
+function renderAdminAccounts(accounts) {
+  if (!els.eligibleTeamsList) return;
+  if (!Array.isArray(accounts) || accounts.length === 0) {
+    els.eligibleTeamsList.className = "checkbox-grid empty";
+    els.eligibleTeamsList.textContent = state.currentUser?.role === "admin" ? "暂无可选账号。" : "";
+    return;
+  }
+
+  els.eligibleTeamsList.className = "checkbox-grid";
+  els.eligibleTeamsList.innerHTML = accounts.map((account) => `
+    <label class="checkbox-card">
+      <input type="checkbox" name="eligible_team_ids" value="${account.id}">
+      <span>
+        <strong>${escapeHtml(account.name)}</strong>
+        <small>${escapeHtml(account.email)}</small>
+      </span>
+    </label>
+  `).join("");
+}
+
+async function submitCompetition(event) {
+  event.preventDefault();
+  if (!state.accessToken || state.currentUser?.role !== "admin") {
+    setStatus(els.competitionFormStatus, "只有管理员可以创建赛事。", "error");
+    return;
+  }
+
+  const form = new FormData(els.competitionForm);
+  const eligibleTeamIds = form.getAll("eligible_team_ids").map((value) => Number(value)).filter((value) => Number.isInteger(value));
+  const payload = {
+    name: String(form.get("name") || "").trim(),
+    description: String(form.get("description") || "").trim() || null,
+    scheduled_at: toIsoFromLocalInput(String(form.get("scheduled_at") || "")),
+    submission_deadline: toIsoFromLocalInput(String(form.get("submission_deadline") || ""), true),
+    live_server_image: String(form.get("live_server_image") || "").trim(),
+    eligible_team_ids: eligibleTeamIds,
+  };
+
+  if (!payload.scheduled_at) {
+    setStatus(els.competitionFormStatus, "请填写赛事开始时间。", "error");
+    return;
+  }
+  if (!payload.live_server_image) {
+    setStatus(els.competitionFormStatus, "请填写游戏镜像。", "error");
+    return;
+  }
+  if (eligibleTeamIds.length === 0) {
+    setStatus(els.competitionFormStatus, "请至少选择一个可参赛账号。", "error");
+    return;
+  }
+
+  setStatus(els.competitionFormStatus, "创建中...");
+  try {
+    const created = await requestJson("/api/competitions/admin", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${state.accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    els.competitionForm.reset();
+    renderAdminAccounts(state.adminAccounts);
+    state.selectedCompetitionId = created.id;
+    setStatus(els.competitionFormStatus, "赛事已创建。", "ok");
+    await loadCompetitions({ refreshDetail: true });
+  } catch (error) {
+    setStatus(els.competitionFormStatus, error.message, "error");
+  }
+}
+
+async function loadCompetitions({ refreshDetail = false } = {}) {
+  if (!state.accessToken || !state.currentUser) {
+    state.competitions = [];
+    state.competitionDetail = null;
+    renderCompetitions([]);
+    renderCompetitionDetail(null);
+    return;
+  }
+
+  try {
+    const competitions = await requestJson("/api/competitions/", {
+      headers: { Authorization: `Bearer ${state.accessToken}` },
+    });
+    state.competitions = Array.isArray(competitions) ? competitions : [];
+
+    if (state.competitions.length === 0) {
+      state.selectedCompetitionId = null;
+      state.competitionDetail = null;
+      renderCompetitions([]);
+      renderCompetitionDetail(null);
+      return;
+    }
+
+    const selectedStillExists = state.competitions.some((competition) => competition.id === state.selectedCompetitionId);
+    if (!selectedStillExists) {
+      state.selectedCompetitionId = state.competitions[0].id;
+    }
+
+    renderCompetitions(state.competitions);
+    if (refreshDetail || state.competitionDetail?.id !== state.selectedCompetitionId) {
+      await loadCompetitionDetail(state.selectedCompetitionId);
+    }
+  } catch (error) {
+    els.competitionsList.className = "empty";
+    els.competitionsList.textContent = error.message;
+    renderCompetitionDetail({ error: error.message });
+  }
+}
+
+function renderCompetitions(competitions) {
+  if (!Array.isArray(competitions) || competitions.length === 0) {
+    els.competitionsList.className = "empty";
+    els.competitionsList.textContent = "暂无赛事。";
+    return;
+  }
+
+  els.competitionsList.className = "competition-list";
+  els.competitionsList.innerHTML = competitions.map((competition) => `
+    <button
+      type="button"
+      class="competition-item ${competition.id === state.selectedCompetitionId ? "is-active" : ""}"
+      data-competition-id="${competition.id}"
+    >
+      <div class="competition-item-head">
+        <strong>${escapeHtml(competition.name)}</strong>
+        <span class="status-chip is-${escapeHtml(competition.status)}">${escapeHtml(formatCompetitionStatus(competition.status))}</span>
+      </div>
+      <div class="competition-item-meta">
+        <span>开始 ${formatTime(competition.scheduled_at)}</span>
+        <span>截止 ${formatTime(competition.effective_deadline)}</span>
+        <span>报名 ${competition.participant_count}/${competition.eligible_team_count}</span>
+        ${competition.is_eligible ? '<span class="competition-badge">你可参赛</span>' : ""}
+      </div>
+    </button>
+  `).join("");
+
+  els.competitionsList.querySelectorAll("[data-competition-id]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const competitionId = Number(button.dataset.competitionId);
+      if (!Number.isInteger(competitionId)) return;
+      state.selectedCompetitionId = competitionId;
+      renderCompetitions(state.competitions);
+      await loadCompetitionDetail(competitionId);
+    });
+  });
+}
+
+async function loadCompetitionDetail(competitionId) {
+  if (!competitionId || !state.accessToken) {
+    state.competitionDetail = null;
+    renderCompetitionDetail(null);
+    return;
+  }
+  try {
+    const detail = await requestJson(`/api/competitions/${competitionId}`, {
+      headers: { Authorization: `Bearer ${state.accessToken}` },
+    });
+    state.competitionDetail = detail;
+    renderCompetitionDetail(detail);
+  } catch (error) {
+    state.competitionDetail = null;
+    renderCompetitionDetail({ error: error.message });
+  }
+}
+
+function renderCompetitionDetail(detail) {
+  if (!detail) {
+    els.competitionDetail.className = "empty";
+    els.competitionDetail.textContent = "从左侧选择一个赛事查看详情。";
+    return;
+  }
+  if (detail.error) {
+    els.competitionDetail.className = "empty";
+    els.competitionDetail.textContent = detail.error;
+    return;
+  }
+
+  const canUseCode = canUseCodeWorkspace();
+  const now = Date.now();
+  const deadlineMs = detail.effective_deadline ? new Date(detail.effective_deadline).getTime() : Number.NaN;
+  const beforeDeadline = Number.isFinite(deadlineMs) ? now < deadlineMs : false;
+  const readySubmissions = (state.submissions || []).filter((submission) => submission.status === "ready");
+  const canMutateEnrollment = canUseCode && detail.status === "scheduled" && beforeDeadline && detail.is_eligible;
+
+  const enrollSection = !canUseCode
+    ? ""
+    : !detail.is_eligible
+      ? `<div class="empty compact">你不在该赛事的可参赛账号名单中。</div>`
+      : `
+        <section class="detail-card">
+          <h4>报名状态</h4>
+          <p class="hint">截止时间：${formatTime(detail.effective_deadline)}</p>
+          ${canMutateEnrollment ? renderEnrollmentForm(detail, readySubmissions) : renderEnrollmentReadonly(detail, readySubmissions.length)}
+        </section>
+      `;
+
+  els.competitionDetail.className = "competition-detail";
+  els.competitionDetail.innerHTML = `
+    <section class="detail-card">
+      <div class="detail-head">
+        <div>
+          <h3>${escapeHtml(detail.name)}</h3>
+          <p class="hint">创建者：${escapeHtml(detail.created_by_name)} (${escapeHtml(detail.created_by_email)})</p>
+        </div>
+        <span class="status-chip is-${escapeHtml(detail.status)}">${escapeHtml(formatCompetitionStatus(detail.status))}</span>
+      </div>
+      <div class="detail-meta-grid">
+        <div><span>开始时间</span><strong>${formatTime(detail.scheduled_at)}</strong></div>
+        <div><span>报名截止</span><strong>${formatTime(detail.effective_deadline)}</strong></div>
+        <div><span>游戏镜像</span><code>${escapeHtml(detail.live_server_image)}</code></div>
+        <div><span>报名数</span><strong>${detail.participant_count} / ${detail.eligible_team_count}</strong></div>
+      </div>
+      ${detail.description ? `<p class="detail-description">${escapeHtml(detail.description)}</p>` : ""}
+      ${detail.error_log ? `<pre class="detail-error">${escapeHtml(detail.error_log)}</pre>` : ""}
+    </section>
+    ${enrollSection}
+    <section class="detail-card">
+      <h4>参赛账号</h4>
+      ${renderCompetitionSlots(detail.slots)}
+    </section>
+  `;
+
+  const enrollForm = els.competitionDetail.querySelector("#competitionEnrollForm");
+  if (enrollForm) {
+    enrollForm.addEventListener("submit", (event) => submitCompetitionEnrollment(event, detail.id));
+  }
+  const withdrawButton = els.competitionDetail.querySelector("#competitionWithdrawButton");
+  if (withdrawButton) {
+    withdrawButton.addEventListener("click", () => withdrawCompetition(detail.id));
+  }
+}
+
+function renderEnrollmentForm(detail, readySubmissions) {
+  return `
+    <form id="competitionEnrollForm" class="stack compact-stack">
+      <label class="field">
+        <span>选择参赛代码</span>
+        <select name="submission_id" ${readySubmissions.length ? "" : "disabled"}>
+          ${readySubmissions.length === 0
+            ? '<option value="">当前没有 ready 状态的代码</option>'
+            : readySubmissions.map((submission) => `
+                <option value="${submission.id}" ${submission.id === detail.current_submission_id ? "selected" : ""}>
+                  ${escapeHtml(submission.name || `代码 #${submission.id}`)} (#${submission.id})
+                </option>
+              `).join("")}
+        </select>
+      </label>
+      <div class="inline-actions">
+        <button class="primary" type="submit" ${readySubmissions.length === 0 ? "disabled" : ""}>保存参赛代码</button>
+        <button id="competitionWithdrawButton" type="button">退出赛事</button>
+      </div>
+      <p id="competitionEnrollStatus" class="status" role="status"></p>
+    </form>
+  `;
+}
+
+function renderEnrollmentReadonly(detail, readyCount) {
+  if (detail.status !== "scheduled") {
+    return `<div class="empty compact">赛事已进入 ${escapeHtml(formatCompetitionStatus(detail.status))} 阶段，报名已锁定。</div>`;
+  }
+  if (!readyCount) {
+    return `<div class="empty compact">你当前没有 ready 状态的代码可报名。</div>`;
+  }
+  return `<div class="empty compact">赛事报名已截止，当前参赛代码：${detail.current_submission_id ? `#${detail.current_submission_id}` : "未报名"}</div>`;
+}
+
+function renderCompetitionSlots(slots) {
+  if (!Array.isArray(slots) || slots.length === 0) {
+    return '<div class="empty compact">暂无可参赛账号。</div>';
+  }
+
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>队伍</th>
+            <th>参赛代码</th>
+            <th>状态</th>
+            <th>得分</th>
+            <th>更新时间</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${slots.map((slot) => `
+            <tr>
+              <td>${escapeHtml(slot.team_name)}</td>
+              <td>${slot.selected_submission_id ? `${escapeHtml(slot.selected_submission_name || `代码 #${slot.selected_submission_id}`)} (#${slot.selected_submission_id})` : "未报名"}</td>
+              <td>${escapeHtml(slot.selected_submission_status || "-")}</td>
+              <td>${slot.score ? escapeHtml(formatScore(slot.score)) : "-"}</td>
+              <td>${formatTime(slot.updated_at)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function submitCompetitionEnrollment(event, competitionId) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const submissionId = Number(form.get("submission_id"));
+  const statusEl = document.getElementById("competitionEnrollStatus");
+  if (!Number.isInteger(submissionId)) {
+    setStatus(statusEl, "请选择一个 ready 状态的代码。", "error");
+    return;
+  }
+
+  setStatus(statusEl, "保存中...");
+  try {
+    const detail = await requestJson(`/api/competitions/${competitionId}/enroll`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${state.accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ submission_id: submissionId }),
+    });
+    state.competitionDetail = detail;
+    setStatus(statusEl, "报名已更新。", "ok");
+    await loadCompetitions({ refreshDetail: false });
+    renderCompetitionDetail(detail);
+  } catch (error) {
+    setStatus(statusEl, error.message, "error");
+  }
+}
+
+async function withdrawCompetition(competitionId) {
+  const statusEl = document.getElementById("competitionEnrollStatus");
+  setStatus(statusEl, "退出中...");
+  try {
+    const detail = await requestJson(`/api/competitions/${competitionId}/enroll`, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${state.accessToken}`,
+      },
+    });
+    state.competitionDetail = detail;
+    setStatus(statusEl, "已退出赛事。", "ok");
+    await loadCompetitions({ refreshDetail: false });
+    renderCompetitionDetail(detail);
+  } catch (error) {
+    setStatus(statusEl, error.message, "error");
+  }
 }
 
 function renderLeaderboard(entries) {
@@ -398,29 +911,46 @@ function renderLeaderboard(entries) {
           <span class="submission-id">#${entry.submission_id}</span>
         </td>
         <td>${escapeHtml(entry.team_name)}</td>
-        <td>${formatInt64Score(entry.total_score)}</td>
-        <td>${formatScore(entry.average_score)}</td>
-        <td>${formatInt64Score(entry.best_score)}</td>
+        <td>${escapeHtml(formatScore(entry.total_score))}</td>
+        <td>${escapeHtml(formatScore(entry.average_score))}</td>
+        <td>${entry.best_score ? escapeHtml(formatScore(entry.best_score)) : "-"}</td>
         <td>${entry.total_matches}</td>
       </tr>
     `;
   }).join("");
 }
 
-function logout() {
+function logout(clearStatus = true) {
   stopAllLogPolling();
   state.accessToken = "";
   state.gameToken = "";
+  state.currentUser = null;
+  state.submissions = [];
+  state.competitions = [];
+  state.competitionDetail = null;
+  state.selectedCompetitionId = null;
+  state.adminAccounts = [];
   localStorage.removeItem("thuai9AccessToken");
   localStorage.removeItem("thuai9GameToken");
-  setStatus(els.authStatus, "已退出。");
+  if (clearStatus) {
+    setStatus(els.authStatus, "已退出。", "ok");
+  }
   setStatus(els.uploadStatus, "");
+  setStatus(els.competitionFormStatus, "");
   renderSession();
-  loadSubmissions();
+  renderWorkspace();
+  renderSubmissions([]);
+  renderAdminAccounts([]);
+  renderCompetitions([]);
+  renderCompetitionDetail(null);
 }
 
 async function requestJson(url, options = {}) {
-  const res = await fetch(url, options);
+  const headers = { ...(options.headers || {}) };
+  if (state.accessToken && !headers.Authorization && url.startsWith("/api/")) {
+    headers.Authorization = `Bearer ${state.accessToken}`;
+  }
+  const res = await fetch(url, { ...options, headers });
   let json = null;
   try {
     json = await res.json();
@@ -471,14 +1001,35 @@ function formatTime(value) {
 }
 
 function formatScore(value) {
-  if (value === null || value === undefined) return "-";
-  const text = String(value).trim();
-  return text || "-";
+  if (value === null || value === undefined || value === "") return "-";
+  return String(value);
 }
 
-function formatInt64Score(value) {
-  if (value === null || value === undefined) return "-";
-  return escapeHtml(String(value));
+function formatCompetitionStatus(status) {
+  switch (status) {
+    case "scheduled":
+      return "待开始";
+    case "running":
+      return "进行中";
+    case "finished":
+      return "已完成";
+    case "error":
+      return "异常";
+    default:
+      return status || "未知";
+  }
+}
+
+function toIsoFromLocalInput(value, allowBlank = false) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return allowBlank ? null : "";
+  }
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) {
+    return allowBlank ? null : "";
+  }
+  return date.toISOString();
 }
 
 function escapeHtml(value) {

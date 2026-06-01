@@ -26,6 +26,11 @@ TEST_CASE("protocol builders serialize outbound actions") {
   CHECK(hello["token"] == "player-1");
   CHECK(hello["role"] == "player");
   CHECK_FALSE(hello.contains("adminSecret"));
+  CHECK_FALSE(hello.contains("playerName"));
+
+  json named_hello = buildHelloMessage("player-1", "player", std::nullopt,
+                                       std::optional<std::string>{"Alpha"});
+  CHECK(named_hello["playerName"] == "Alpha");
 
   json limit_buy = buildLimitBuyMessage("player-1", 1050, 3);
   CHECK(limit_buy["messageType"] == "LIMIT_BUY");

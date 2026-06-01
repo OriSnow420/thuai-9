@@ -15,6 +15,7 @@ public class Player
 
     public string Token { get; }
     public int PlayerId { get; }
+    public string DisplayName { get; private set; }
 
     public long Mora { get; private set; } = 1_000_000;
     public long FrozenMora { get; private set; }
@@ -53,10 +54,11 @@ public class Player
     public int ImmuneUntilTick { get; set; }
     public long ProtectedMidPrice { get; set; }
 
-    public Player(string token, int playerId, GameSettings settings)
+    public Player(string token, int playerId, GameSettings settings, string? displayName = null)
     {
         Token = token;
         PlayerId = playerId;
+        DisplayName = NormalizeDisplayName(displayName) ?? BuildDefaultDisplayName(playerId);
 
         _initialMora = settings.InitialMora;
         _initialGold = settings.InitialGold;
@@ -71,6 +73,23 @@ public class Player
     public Player(string token, int playerId)
         : this(token, playerId, new GameSettings())
     {
+    }
+
+    public static string BuildDefaultDisplayName(int playerId) => $"Player{playerId}";
+
+    public static string? NormalizeDisplayName(string? displayName)
+    {
+        if (string.IsNullOrWhiteSpace(displayName))
+            return null;
+
+        return displayName.Trim();
+    }
+
+    public void SetDisplayName(string? displayName)
+    {
+        var normalized = NormalizeDisplayName(displayName);
+        if (normalized != null)
+            DisplayName = normalized;
     }
 
     public void ResetForNewMonth()
