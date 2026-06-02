@@ -174,6 +174,13 @@ class TeamAccountOut(BaseModel):
     email: str
 
 
+def _validated_eligible_team_ids(team_ids: list[int]) -> list[int]:
+    deduped = list(dict.fromkeys(team_ids))
+    if not deduped:
+        raise ValueError("至少选择一个参赛账号")
+    return deduped
+
+
 class CompetitionCreateRequest(BaseModel):
     name: str
     description: str | None = None
@@ -193,10 +200,16 @@ class CompetitionCreateRequest(BaseModel):
     @field_validator("eligible_team_ids")
     @classmethod
     def non_empty_team_ids(cls, v: list[int]) -> list[int]:
-        deduped = list(dict.fromkeys(v))
-        if not deduped:
-            raise ValueError("至少选择一个参赛账号")
-        return deduped
+        return _validated_eligible_team_ids(v)
+
+
+class CompetitionEligibleTeamsUpdateRequest(BaseModel):
+    eligible_team_ids: list[int]
+
+    @field_validator("eligible_team_ids")
+    @classmethod
+    def non_empty_team_ids(cls, v: list[int]) -> list[int]:
+        return _validated_eligible_team_ids(v)
 
 
 class CompetitionEnrollRequest(BaseModel):

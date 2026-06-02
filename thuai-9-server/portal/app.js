@@ -542,10 +542,26 @@ async function loadAdminAccounts() {
     });
     state.adminAccounts = Array.isArray(accounts) ? accounts : [];
     renderAdminAccounts(state.adminAccounts);
+    if (state.competitionDetail) {
+      renderCompetitionDetail(state.competitionDetail);
+    }
   } catch (error) {
     els.eligibleTeamsList.className = "checkbox-grid empty";
     els.eligibleTeamsList.textContent = error.message;
   }
+}
+
+function renderAccountCheckboxCards(accounts, selectedIds = []) {
+  const selectedSet = new Set(selectedIds);
+  return accounts.map((account) => `
+    <label class="checkbox-card">
+      <input type="checkbox" name="eligible_team_ids" value="${account.id}" ${selectedSet.has(account.id) ? "checked" : ""}>
+      <span>
+        <strong>${escapeHtml(account.name)}</strong>
+        <small>${escapeHtml(account.email)}</small>
+      </span>
+    </label>
+  `).join("");
 }
 
 function renderAdminAccounts(accounts) {
@@ -557,15 +573,14 @@ function renderAdminAccounts(accounts) {
   }
 
   els.eligibleTeamsList.className = "checkbox-grid";
-  els.eligibleTeamsList.innerHTML = accounts.map((account) => `
-    <label class="checkbox-card">
-      <input type="checkbox" name="eligible_team_ids" value="${account.id}">
-      <span>
-        <strong>${escapeHtml(account.name)}</strong>
-        <small>${escapeHtml(account.email)}</small>
-      </span>
-    </label>
-  `).join("");
+  els.eligibleTeamsList.innerHTML = renderAccountCheckboxCards(accounts);
+}
+
+function collectEligibleTeamIds(formEl) {
+  return new FormData(formEl)
+    .getAll("eligible_team_ids")
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value));
 }
 
 async function submitCompetition(event) {
@@ -576,7 +591,7 @@ async function submitCompetition(event) {
   }
 
   const form = new FormData(els.competitionForm);
-  const eligibleTeamIds = form.getAll("eligible_team_ids").map((value) => Number(value)).filter((value) => Number.isInteger(value));
+  const eligibleTeamIds = collectEligibleTeamIds(els.competitionForm);
   const payload = {
     name: String(form.get("name") || "").trim(),
     description: String(form.get("description") || "").trim() || null,
@@ -732,6 +747,7 @@ function renderCompetitionDetail(detail) {
   const beforeDeadline = Number.isFinite(deadlineMs) ? now < deadlineMs : false;
   const readySubmissions = (state.submissions || []).filter((submission) => submission.status === "ready");
   const canMutateEnrollment = canUseCode && detail.status === "scheduled" && beforeDeadline && detail.is_eligible;
+  const canManageEligibility = state.currentUser?.role === "admin";
 
   const enrollSection = !canUseCode
     ? ""
@@ -744,6 +760,16 @@ function renderCompetitionDetail(detail) {
           ${canMutateEnrollment ? renderEnrollmentForm(detail, readySubmissions) : renderEnrollmentReadonly(detail, readySubmissions.length)}
         </section>
       `;
+  const adminEligibilitySection = !canManageEligibility
+    ? ""
+    : `
+      <section class="detail-card">
+        <h4>编辑可参赛账号</h4>
+        ${detail.status === "scheduled"
+          ? renderCompetitionEligibilityEditor(detail)
+          : `<div class="empty compact">赛事已进入 ${escapeHtml(formatCompetitionStatus(detail.status))} 阶段，不再支持修改可参赛名单。</div>`}
+      </section>
+    `;
 
   els.competitionDetail.className = "competition-detail";
   els.competitionDetail.innerHTML = `
@@ -765,6 +791,7 @@ function renderCompetitionDetail(detail) {
       ${detail.error_log ? `<pre class="detail-error">${escapeHtml(detail.error_log)}</pre>` : ""}
     </section>
     ${enrollSection}
+    ${adminEligibilitySection}
     <section class="detail-card">
       <h4>参赛账号</h4>
       ${renderCompetitionSlots(detail.slots)}
@@ -778,6 +805,10 @@ function renderCompetitionDetail(detail) {
   const withdrawButton = els.competitionDetail.querySelector("#competitionWithdrawButton");
   if (withdrawButton) {
     withdrawButton.addEventListener("click", () => withdrawCompetition(detail.id));
+  }
+  const eligibilityForm = els.competitionDetail.querySelector("#competitionEligibilityForm");
+  if (eligibilityForm) {
+    eligibilityForm.addEventListener("submit", (event) => submitCompetitionEligibilityUpdate(event, detail.id));
   }
 }
 
@@ -813,6 +844,29 @@ function renderEnrollmentReadonly(detail, readyCount) {
     return `<div class="empty compact">你当前没有 ready 状态的代码可报名。</div>`;
   }
   return `<div class="empty compact">赛事报名已截止，当前参赛代码：${detail.current_submission_id ? `#${detail.current_submission_id}` : "未报名"}</div>`;
+}
+
+function renderCompetitionEligibilityEditor(detail) {
+  if (!Array.isArray(state.adminAccounts) || state.adminAccounts.length === 0) {
+    return '<div class="empty compact">暂无可选账号。</div>';
+  }
+
+  const selectedIds = Array.isArray(detail.slots)
+    ? detail.slots.map((slot) => slot.team_id)
+    : [];
+
+  return `
+    <form id="competitionEligibilityForm" class="stack compact-stack">
+      <p class="hint">取消勾选会移除对应队伍的参赛资格和已保存的报名代码。</p>
+      <div class="checkbox-grid">
+        ${renderAccountCheckboxCards(state.adminAccounts, selectedIds)}
+      </div>
+      <div class="inline-actions">
+        <button class="primary" type="submit">保存可参赛列表</button>
+      </div>
+      <p id="competitionEligibilityStatus" class="status" role="status"></p>
+    </form>
+  `;
 }
 
 function renderCompetitionSlots(slots) {
@@ -891,6 +945,40 @@ async function withdrawCompetition(competitionId) {
     setStatus(statusEl, "已退出赛事。", "ok");
     await loadCompetitions({ refreshDetail: false });
     renderCompetitionDetail(detail);
+  } catch (error) {
+    setStatus(statusEl, error.message, "error");
+  }
+}
+
+async function submitCompetitionEligibilityUpdate(event, competitionId) {
+  event.preventDefault();
+  if (!state.accessToken || state.currentUser?.role !== "admin") {
+    setStatus(document.getElementById("competitionEligibilityStatus"), "只有管理员可以修改可参赛列表。", "error");
+    return;
+  }
+
+  const formEl = event.currentTarget;
+  const statusEl = document.getElementById("competitionEligibilityStatus");
+  const eligibleTeamIds = collectEligibleTeamIds(formEl);
+  if (eligibleTeamIds.length === 0) {
+    setStatus(statusEl, "请至少选择一个可参赛账号。", "error");
+    return;
+  }
+
+  setStatus(statusEl, "保存中...");
+  try {
+    const detail = await requestJson(`/api/competitions/admin/${competitionId}/eligible-teams`, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${state.accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ eligible_team_ids: eligibleTeamIds }),
+    });
+    state.competitionDetail = detail;
+    await loadCompetitions({ refreshDetail: false });
+    renderCompetitionDetail(detail);
+    setStatus(document.getElementById("competitionEligibilityStatus"), "可参赛列表已更新。", "ok");
   } catch (error) {
     setStatus(statusEl, error.message, "error");
   }

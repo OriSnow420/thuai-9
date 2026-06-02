@@ -21,10 +21,26 @@ public class TradingDay
     private readonly int _maxReportsPerNews;
     private readonly int _npcNewsReactionDelayTicks;
     private readonly int _settlementTwapWindowTicks;
+    private readonly double _markPriceMaxDeviationRatioFromLastPrice;
+    private readonly double _safePriceMaxDailyMoveRatio;
+    private readonly double _maxOrderPriceDeviationRatioFromSafePrice;
+    private readonly long _researchMaxAbsRewardPerReport;
+    private readonly long _researchPositiveRewardBudgetPerPlayerPerMonth;
+    private readonly long _systemInitialMora;
+    private readonly long _systemInitialGold;
+    private readonly int _systemMaxNetBuyQuantityPerDay;
+    private readonly int _systemMaxNetSellQuantityPerDay;
+    private readonly int _systemMaxGrossTradeQuantityPerDay;
+    private readonly bool _circuitBreakerEnabled;
+    private readonly double _circuitBreakerTriggerRatio;
+    private readonly int _circuitBreakerDurationTicks;
     private readonly int _initialLiquidityLevels;
     private readonly int _initialLiquidityBaseQuantity;
     private readonly int _initialLiquidityQuantityStep;
-    private readonly Dictionary<int, long> _midPriceHistory = new();
+    private readonly Dictionary<int, long> _markPriceHistory = new();
+    private readonly Dictionary<int, long> _safePriceHistory = new();
+    private readonly Dictionary<int, BigInteger> _tradeNotionalHistory = new();
+    private readonly Dictionary<int, int> _tradeVolumeHistory = new();
     private readonly List<Trade> _tradesThisDay = new();
     private readonly List<ResearchReport> _settledReportsThisDay = new();
     private readonly List<News> _publishedNewsThisDay = new();
@@ -32,6 +48,7 @@ public class TradingDay
     private readonly List<(string PlayerToken, News Preview)> _pendingInsiderPreviews = new();
 
     private int _currentTick;
+    private int _circuitBreakerTicksRemaining;
     private bool _isFinished;
     private bool _hasPendingNotifications;
 
@@ -70,6 +87,19 @@ public class TradingDay
         int markPriceDepthLevels = 3,
         int markPriceMinLevelQuantity = 20,
         int markPriceMinOrderAgeTicks = 1,
+        double markPriceMaxDeviationRatioFromLastPrice = 0.30,
+        double safePriceMaxDailyMoveRatio = 0.15,
+        double maxOrderPriceDeviationRatioFromSafePrice = 0.30,
+        long researchMaxAbsRewardPerReport = 100000,
+        long researchPositiveRewardBudgetPerPlayerPerMonth = 200000,
+        long systemInitialMora = 100_000_000,
+        long systemInitialGold = 100_000,
+        int systemMaxNetBuyQuantityPerDay = 200,
+        int systemMaxNetSellQuantityPerDay = 200,
+        int systemMaxGrossTradeQuantityPerDay = 300,
+        bool circuitBreakerEnabled = true,
+        double circuitBreakerTriggerRatio = 0.25,
+        int circuitBreakerDurationTicks = 2,
         int initialLiquidityLevels = 8,
         int initialLiquidityBaseQuantity = 60,
         int initialLiquidityQuantityStep = 10)
@@ -78,27 +108,63 @@ public class TradingDay
         _maxTicks = maxTicks;
         _initialGoldPrice = initialGoldPrice;
         _players = players;
-        _orderBook = new OrderBook(initialGoldPrice, markPriceDepthLevels, markPriceMinLevelQuantity, markPriceMinOrderAgeTicks);
-        _matchEngine = new MatchEngine(_orderBook, players);
+        _orderBook = new OrderBook(
+            initialGoldPrice,
+            markPriceDepthLevels,
+            markPriceMinLevelQuantity,
+            markPriceMinOrderAgeTicks,
+            markPriceMaxDeviationRatioFromLastPrice);
         _newsSystem = new NewsSystem(newsIntervalMin, newsIntervalMax, researchWindow, scheduledNewsTicks, newsSentimentDurationTicks);
         _npcTrader = new NPCTrader(npcOrdersPerTick);
-        _researchSystem = new ResearchSystem(_newsSystem, baseResearchReward, researchWindow, researchSettlementDelay);
         _researchEnabled = researchEnabled;
         _maxReportsPerTick = Math.Max(0, maxReportsPerTick);
         _maxReportsPerNews = Math.Max(0, maxReportsPerNews);
         _npcNewsReactionDelayTicks = Math.Max(0, npcNewsReactionDelayTicks);
         _settlementTwapWindowTicks = Math.Max(1, settlementTwapWindowTicks);
+        _markPriceMaxDeviationRatioFromLastPrice = Math.Max(0, markPriceMaxDeviationRatioFromLastPrice);
+        _safePriceMaxDailyMoveRatio = Math.Max(0, safePriceMaxDailyMoveRatio);
+        _maxOrderPriceDeviationRatioFromSafePrice = Math.Max(0, maxOrderPriceDeviationRatioFromSafePrice);
+        _researchMaxAbsRewardPerReport = Math.Max(0, researchMaxAbsRewardPerReport);
+        _researchPositiveRewardBudgetPerPlayerPerMonth = Math.Max(0, researchPositiveRewardBudgetPerPlayerPerMonth);
+        _systemInitialMora = Math.Max(0, systemInitialMora);
+        _systemInitialGold = Math.Max(0, systemInitialGold);
+        _systemMaxNetBuyQuantityPerDay = Math.Max(0, systemMaxNetBuyQuantityPerDay);
+        _systemMaxNetSellQuantityPerDay = Math.Max(0, systemMaxNetSellQuantityPerDay);
+        _systemMaxGrossTradeQuantityPerDay = Math.Max(0, systemMaxGrossTradeQuantityPerDay);
+        _circuitBreakerEnabled = circuitBreakerEnabled;
+        _circuitBreakerTriggerRatio = Math.Max(0, circuitBreakerTriggerRatio);
+        _circuitBreakerDurationTicks = Math.Max(0, circuitBreakerDurationTicks);
         _initialLiquidityLevels = Math.Max(1, initialLiquidityLevels);
         _initialLiquidityBaseQuantity = Math.Max(1, initialLiquidityBaseQuantity);
         _initialLiquidityQuantityStep = Math.Max(0, initialLiquidityQuantityStep);
+
+        _matchEngine = new MatchEngine(
+            _orderBook,
+            players,
+            _systemInitialMora,
+            _systemInitialGold,
+            _systemMaxNetBuyQuantityPerDay,
+            _systemMaxNetSellQuantityPerDay,
+            _systemMaxGrossTradeQuantityPerDay);
+        _researchSystem = new ResearchSystem(
+            _newsSystem,
+            baseResearchReward,
+            researchWindow,
+            researchSettlementDelay,
+            _researchMaxAbsRewardPerReport,
+            _researchPositiveRewardBudgetPerPlayerPerMonth);
     }
 
     public void Initialize()
     {
         _currentTick = 0;
+        _circuitBreakerTicksRemaining = 0;
         _isFinished = false;
         _hasPendingNotifications = false;
-        _midPriceHistory.Clear();
+        _markPriceHistory.Clear();
+        _safePriceHistory.Clear();
+        _tradeNotionalHistory.Clear();
+        _tradeVolumeHistory.Clear();
         _tradesThisDay.Clear();
         _settledReportsThisDay.Clear();
         _publishedNewsThisDay.Clear();
@@ -112,7 +178,7 @@ public class TradingDay
         }
 
         SeedInitialLiquidity();
-        RecordMidPrice(0);
+        RecordMidPrice(0, circuitBreakerActive: false);
     }
 
     public void Tick()
@@ -144,10 +210,18 @@ public class TradingDay
 
             CheckInsiderNewsPreview();
 
-            var npcSentiment = _newsSystem.GetEffectiveSentiment(_currentTick, _npcNewsReactionDelayTicks);
-            _npcTrader.GenerateOrders(_matchEngine, _orderBook, npcSentiment, _currentTick);
-            _tradesThisDay.AddRange(_matchEngine.ProcessDay(_currentTick));
-            RecordMidPrice(_currentTick);
+            bool circuitBreakerActive = IsCircuitBreakerActive;
+            if (!circuitBreakerActive)
+            {
+                var npcSentiment = _newsSystem.GetEffectiveSentiment(_currentTick, _npcNewsReactionDelayTicks);
+                _npcTrader.GenerateOrders(_matchEngine, _orderBook, npcSentiment, _currentTick);
+                var trades = _matchEngine.ProcessDay(_currentTick);
+                _tradesThisDay.AddRange(trades);
+                RecordTradeHistory(_currentTick, trades);
+            }
+
+            long rawMarkPrice = RecordMidPrice(_currentTick, circuitBreakerActive);
+            UpdateCircuitBreaker(rawMarkPrice, circuitBreakerActive);
             SettlePendingReports();
 
             _hasPendingNotifications = _publishedNewsThisDay.Count > 0
@@ -301,6 +375,28 @@ public class TradingDay
         get { lock (_lock) { return _orderBook.MidPrice; } }
     }
 
+    public long CurrentSafePrice
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return GetSafePriceAtTick(_currentTick);
+            }
+        }
+    }
+
+    public bool IsCircuitBreakerActive
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _circuitBreakerTicksRemaining > 0;
+            }
+        }
+    }
+
     public void CancelPlayerOrders(string playerToken)
     {
         lock (_lock)
@@ -321,21 +417,35 @@ public class TradingDay
 
     public long GetMidPriceAtTick(int tick)
     {
-        if (_midPriceHistory.TryGetValue(tick, out var price))
+        if (_markPriceHistory.TryGetValue(tick, out var price))
             return price;
 
-        if (_midPriceHistory.Count == 0)
+        if (_markPriceHistory.Count == 0)
             return _initialGoldPrice;
 
-        int nearestTick = _midPriceHistory.Keys.MinBy(key => Math.Abs(key - tick));
-        return _midPriceHistory[nearestTick];
+        int nearestTick = _markPriceHistory.Keys.MinBy(key => Math.Abs(key - tick));
+        return _markPriceHistory[nearestTick];
+    }
+
+    public long GetSafePriceAtTick(int tick)
+    {
+        if (_safePriceHistory.TryGetValue(tick, out var price))
+            return price;
+
+        if (_safePriceHistory.Count == 0)
+            return _initialGoldPrice;
+
+        int nearestTick = _safePriceHistory.Keys.MinBy(key => Math.Abs(key - tick));
+        return _safePriceHistory[nearestTick];
     }
 
     private bool HandleLimitOrder(string playerToken, OrderSide side, long price, int quantity)
     {
         if (_isFinished) return false;
         if (!_players.TryGetValue(playerToken, out var player)) return false;
+        if (_circuitBreakerTicksRemaining > 0) return false;
         if (!player.CanPlaceOrder()) return false;
+        if (!IsWithinSafePriceBand(price)) return false;
 
         int extraDelay = player.ConsumeNextOrderExtraDelayDays();
         int effectiveDelay = player.NetworkDelay + extraDelay;
@@ -355,19 +465,11 @@ public class TradingDay
         for (int offset = 1; offset <= _initialLiquidityLevels; offset++)
         {
             int quantity = _initialLiquidityBaseQuantity + offset * _initialLiquidityQuantityStep;
-            var buy = new Order("SYSTEM", OrderSide.Buy, Math.Max(1, _initialGoldPrice - offset), quantity, 0, 0, 0)
-            {
-                Intent = OrderIntent.Resting,
-                Status = OrderStatus.Pending
-            };
-            var sell = new Order("SYSTEM", OrderSide.Sell, _initialGoldPrice + offset, quantity, 0, 0, 0)
-            {
-                Intent = OrderIntent.Resting,
-                Status = OrderStatus.Pending
-            };
-            _orderBook.AddOrder(buy);
-            _orderBook.AddOrder(sell);
+            _matchEngine.SubmitOrder("SYSTEM", OrderSide.Buy, Math.Max(1, _initialGoldPrice - offset), quantity, 0);
+            _matchEngine.SubmitOrder("SYSTEM", OrderSide.Sell, _initialGoldPrice + offset, quantity, 0);
         }
+
+        _matchEngine.ProcessDay(0);
     }
 
     private void CheckInsiderNewsPreview()
@@ -415,28 +517,125 @@ public class TradingDay
         }
     }
 
-    private void RecordMidPrice(int tick)
+    private long RecordMidPrice(int tick, bool circuitBreakerActive)
     {
-        long fallback = tick > 0 && _midPriceHistory.TryGetValue(tick - 1, out var previousPrice)
-            ? previousPrice
-            : _orderBook.MidPrice;
-        _midPriceHistory[tick] = _orderBook.GetMarkPrice(tick, fallback);
+        long previousSafePrice = tick > 0 && _safePriceHistory.TryGetValue(tick - 1, out var earlierSafePrice)
+            ? earlierSafePrice
+            : _initialGoldPrice;
+        long rawMarkPrice = _orderBook.GetMarkPrice(tick, previousSafePrice);
+        _markPriceHistory[tick] = rawMarkPrice;
+        _safePriceHistory[tick] = circuitBreakerActive
+            ? previousSafePrice
+            : ClampSafePrice(rawMarkPrice, previousSafePrice);
+        return rawMarkPrice;
     }
 
     private long GetSettlementPriceAtTick(int tick)
     {
         int endTick = Math.Max(0, tick);
         int startTick = Math.Max(0, endTick - _settlementTwapWindowTicks + 1);
+        BigInteger tradeNotional = BigInteger.Zero;
+        int tradeVolume = 0;
+
+        for (int sampleTick = startTick; sampleTick <= endTick; sampleTick++)
+        {
+            if (_tradeNotionalHistory.TryGetValue(sampleTick, out var tickNotional))
+                tradeNotional += tickNotional;
+            if (_tradeVolumeHistory.TryGetValue(sampleTick, out var tickVolume))
+                tradeVolume += tickVolume;
+        }
+
+        if (tradeVolume > 0)
+            return ClampToInt64(tradeNotional / tradeVolume);
+
         BigInteger total = BigInteger.Zero;
         int count = 0;
 
         for (int sampleTick = startTick; sampleTick <= endTick; sampleTick++)
         {
-            total += GetMidPriceAtTick(sampleTick);
+            total += GetSafePriceAtTick(sampleTick);
             count++;
         }
 
         return count == 0 ? _initialGoldPrice : ClampToInt64(total / count);
+    }
+
+    private void RecordTradeHistory(int tick, IReadOnlyList<Trade> trades)
+    {
+        if (trades.Count == 0)
+            return;
+
+        BigInteger notional = BigInteger.Zero;
+        int volume = 0;
+        foreach (var trade in trades)
+        {
+            notional += (BigInteger)trade.Price * trade.Quantity;
+            volume += trade.Quantity;
+        }
+
+        if (volume <= 0)
+            return;
+
+        _tradeNotionalHistory[tick] = _tradeNotionalHistory.GetValueOrDefault(tick, BigInteger.Zero) + notional;
+        _tradeVolumeHistory[tick] = _tradeVolumeHistory.GetValueOrDefault(tick, 0) + volume;
+    }
+
+    private bool IsWithinSafePriceBand(long price)
+    {
+        if (_maxOrderPriceDeviationRatioFromSafePrice <= 0)
+            return true;
+
+        long safePrice = GetSafePriceAtTick(_currentTick);
+        if (safePrice <= 0)
+            return true;
+
+        (long lowerBound, long upperBound) = CalculatePriceBand(safePrice, _maxOrderPriceDeviationRatioFromSafePrice);
+        return price >= lowerBound && price <= upperBound;
+    }
+
+    private long ClampSafePrice(long candidatePrice, long referencePrice)
+    {
+        if (_safePriceMaxDailyMoveRatio <= 0 || referencePrice <= 0)
+            return Math.Max(1, candidatePrice);
+
+        (long lowerBound, long upperBound) = CalculatePriceBand(referencePrice, _safePriceMaxDailyMoveRatio);
+        return Math.Clamp(candidatePrice, lowerBound, upperBound);
+    }
+
+    private static (long LowerBound, long UpperBound) CalculatePriceBand(long referencePrice, double ratio)
+    {
+        decimal safeRatio = Math.Max(0m, (decimal)ratio);
+        decimal lowerMultiplier = Math.Max(0m, 1m - safeRatio);
+        decimal upperMultiplier = 1m + safeRatio;
+
+        long lowerBound = ClampPositiveDecimal(decimal.Floor(referencePrice * lowerMultiplier));
+        long upperBound = ClampPositiveDecimal(decimal.Ceiling(referencePrice * upperMultiplier));
+        if (upperBound < lowerBound)
+            upperBound = lowerBound;
+
+        return (lowerBound, upperBound);
+    }
+
+    private void UpdateCircuitBreaker(long rawMarkPrice, bool wasActiveThisTick)
+    {
+        if (!_circuitBreakerEnabled || _circuitBreakerDurationTicks <= 0)
+            return;
+
+        if (wasActiveThisTick)
+        {
+            _circuitBreakerTicksRemaining = Math.Max(0, _circuitBreakerTicksRemaining - 1);
+            return;
+        }
+
+        long referenceSafePrice = _currentTick > 0
+            ? GetSafePriceAtTick(_currentTick - 1)
+            : _initialGoldPrice;
+        if (referenceSafePrice <= 0)
+            return;
+
+        decimal moveRatio = Math.Abs((decimal)rawMarkPrice - referenceSafePrice) / referenceSafePrice;
+        if (moveRatio >= (decimal)_circuitBreakerTriggerRatio)
+            _circuitBreakerTicksRemaining = _circuitBreakerDurationTicks;
     }
 
     private static long ClampToInt64(BigInteger value)
@@ -445,6 +644,15 @@ public class TradingDay
             return long.MaxValue;
         if (value < long.MinValue)
             return long.MinValue;
+        return (long)value;
+    }
+
+    private static long ClampPositiveDecimal(decimal value)
+    {
+        if (value < 1)
+            return 1;
+        if (value > long.MaxValue)
+            return long.MaxValue;
         return (long)value;
     }
 

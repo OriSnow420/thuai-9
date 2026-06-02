@@ -607,18 +607,46 @@ public class ResearchSystemCoverageTests
                 Assert.Same(first, report);
                 Assert.Equal(1, report.SubmissionRank);
                 Assert.True(report.IsCorrect);
-                Assert.True(report.Reward > 0);
+                Assert.Equal(40, report.Reward);
             },
             report =>
             {
                 Assert.Same(second, report);
                 Assert.Equal(2, report.SubmissionRank);
                 Assert.False(report.IsCorrect);
-                Assert.True(report.Reward < 0);
+                Assert.Equal(-20, report.Reward);
             });
 
         Assert.Empty(research.PendingReports);
         Assert.Equal(2, research.SettledReports.Count);
+    }
+
+    [Fact]
+    public void SettleReports_AppliesPerReportCapAndMonthlyPositiveBudget()
+    {
+        var newsSystem = new NewsSystem();
+        var research = new ResearchSystem(
+            newsSystem,
+            baseReward: 1000,
+            researchWindow: 3,
+            settlementDelay: 3,
+            maxAbsRewardPerReport: 300,
+            positiveRewardBudgetPerPlayerPerMonth: 500);
+
+        var news1 = newsSystem.InjectFakeNews(0, "alpha", NewsSentiment.Bullish);
+        var news2 = newsSystem.InjectFakeNews(1, "alpha", NewsSentiment.Bullish);
+        var news3 = newsSystem.InjectFakeNews(2, "alpha", NewsSentiment.Bullish);
+
+        Assert.NotNull(research.SubmitReport("alpha", news1.NewsId, Prediction.Long, currentTick: 0));
+        Assert.NotNull(research.SubmitReport("alpha", news2.NewsId, Prediction.Long, currentTick: 1));
+        Assert.NotNull(research.SubmitReport("alpha", news3.NewsId, Prediction.Long, currentTick: 2));
+
+        var settled = research.SettleReports(5, tick => tick <= 2 ? 100 : 300)
+            .Where(report => report.PlayerToken == "alpha")
+            .OrderBy(report => report.NewsId)
+            .ToList();
+
+        Assert.Equal(new long[] { 300, 200, 0 }, settled.Select(report => report.Reward));
     }
 
     [Fact]
@@ -692,7 +720,7 @@ public class TradingDayCoverageTests
         var (day, players) = CreateTradingDay(maxTicks: 1);
         players["alpha"].NetworkDelay = 2;
 
-        Assert.False(day.HandleLimitBuy("alpha", 100, 1));
+        Assert.False(day.HandleLimitBuy("alpha", 1000, 1));
         Assert.Empty(day.MatchEngine.PendingOrders);
         Assert.Equal(1_000_000, players["alpha"].Mora);
     }
@@ -703,10 +731,20 @@ public class TradingDayCoverageTests
         var (day, players) = CreateTradingDay(maxTicks: 5);
         players["alpha"].MaxOrdersPerTick = 2;
 
-        Assert.True(day.HandleLimitBuy("alpha", 100, 1));
-        Assert.True(day.HandleLimitBuy("alpha", 100, 1));
-        Assert.False(day.HandleLimitBuy("alpha", 100, 1));
+        Assert.True(day.HandleLimitBuy("alpha", 1000, 1));
+        Assert.True(day.HandleLimitBuy("alpha", 1000, 1));
+        Assert.False(day.HandleLimitBuy("alpha", 1000, 1));
         Assert.Equal(2, day.MatchEngine.PendingOrders.Count);
+    }
+
+    [Fact]
+    public void HandleLimitBuy_RejectsWhenOutsideSafePriceBand()
+    {
+        var (day, _) = CreateTradingDay(maxTicks: 5);
+
+        Assert.False(day.HandleLimitBuy("alpha", 1301, 1));
+        Assert.False(day.HandleLimitSell("alpha", 699, 1));
+        Assert.Empty(day.MatchEngine.PendingOrders);
     }
 
     [Fact]
@@ -762,7 +800,7 @@ public class TradingDayCoverageTests
         players["alpha"].ActiveCards.Add(new PublicOpinionAttack());
         players["alpha"].ActiveCards.Add(new FlashTrading());
 
-        Assert.True(day.HandleLimitBuy("alpha", 100, 1));
+        Assert.True(day.HandleLimitBuy("alpha", 1000, 1));
         Assert.True(day.HandleActivateSkill("alpha", "止损名刀"));
         Assert.Equal(990_000, players["alpha"].Mora);
         Assert.Empty(day.GetPlayerPendingOrders("alpha"));
@@ -773,7 +811,7 @@ public class TradingDayCoverageTests
         Assert.Equal(100, players["alpha"].LockedGold);
 
         Assert.True(day.HandleActivateSkill("alpha", "网络风暴", targetPlayerId: 1));
-        Assert.True(day.HandleLimitBuy("beta", 100, 1));
+        Assert.True(day.HandleLimitBuy("beta", 1000, 1));
         Assert.Equal(2, day.MatchEngine.GetPendingOrders("beta").Single().ArrivalTick);
 
         Assert.True(day.HandleActivateSkill("alpha", "舆情打击"));
@@ -790,6 +828,55 @@ public class TradingDayCoverageTests
         day.Tick();
         day.Tick();
         Assert.False(players["alpha"].IsImmune);
+    }
+
+    [Fact]
+    public void Tick_ClampsSafePriceAndActivatesCircuitBreaker()
+    {
+        var (day, _) = CreateTradingDay(maxTicks: 5);
+        day.OrderBook.Clear();
+        day.OrderBook.AddOrder(new Order("makerA", OrderSide.Buy, 1498, 50, submitTick: 0, networkDelay: 0));
+        day.OrderBook.AddOrder(new Order("makerB", OrderSide.Sell, 1502, 50, submitTick: 0, networkDelay: 0));
+        day.OrderBook.UpdateLastPrice(1500);
+
+        day.Tick();
+
+        Assert.Equal(1500, day.GetMidPriceAtTick(1));
+        Assert.Equal(1150, day.GetSafePriceAtTick(1));
+        Assert.True(day.IsCircuitBreakerActive);
+        Assert.False(day.HandleLimitBuy("alpha", 1100, 1));
+
+        day.Tick();
+        Assert.True(day.IsCircuitBreakerActive);
+
+        day.Tick();
+        Assert.False(day.IsCircuitBreakerActive);
+    }
+
+    [Fact]
+    public void CalculateSettlement_PrefersTradeTwapOverBookDrivenSafePrice()
+    {
+        var (day, players) = CreateTradingDay(maxTicks: 2);
+        day.OrderBook.Clear();
+        day.OrderBook.UpdateLastPrice(1000);
+
+        Assert.True(day.HandleLimitSell("beta", 1000, 10));
+        Assert.True(day.HandleLimitBuy("alpha", 1000, 10));
+        day.Tick();
+
+        day.OrderBook.Clear();
+        day.OrderBook.AddOrder(new Order("makerA", OrderSide.Buy, 1498, 50, submitTick: 0, networkDelay: 0));
+        day.OrderBook.AddOrder(new Order("makerB", OrderSide.Sell, 1502, 50, submitTick: 0, networkDelay: 0));
+        day.OrderBook.UpdateLastPrice(1500);
+        day.Tick();
+
+        var settlement = day.CalculateSettlement();
+        long expectedAlphaNav = players["alpha"].Mora + (long)players["alpha"].Gold * 1000;
+        long expectedBetaNav = players["beta"].Mora + (long)players["beta"].Gold * 1000;
+
+        Assert.Equal(1150, day.GetSafePriceAtTick(2));
+        Assert.Equal(expectedAlphaNav, settlement["alpha"]);
+        Assert.Equal(expectedBetaNav, settlement["beta"]);
     }
 
     private static (TradingDay Day, Dictionary<string, Player> Players) CreateTradingDay(
