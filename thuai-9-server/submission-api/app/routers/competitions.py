@@ -13,6 +13,7 @@ from app.schemas import (
     CompetitionCreateRequest,
     CompetitionDetailOut,
     CompetitionEnrollRequest,
+    CompetitionEligibleTeamsUpdateRequest,
     CompetitionSlotOut,
     CompetitionSummaryOut,
 )
@@ -23,6 +24,49 @@ router = APIRouter()
 
 def _effective_deadline(competition: Competition) -> datetime:
     return competition.submission_deadline or competition.scheduled_at
+
+
+async def _resolve_eligible_teams(db: AsyncSession, team_ids: list[int]) -> list[Team]:
+    team_rows = await db.execute(
+        select(Team).where(Team.id.in_(team_ids)).order_by(Team.id.asc())
+    )
+    teams = team_rows.scalars().all()
+    found_ids = {team.id for team in teams}
+    missing_ids = [team_id for team_id in team_ids if team_id not in found_ids]
+    if missing_ids:
+        raise HTTPException(status_code=400, detail=f"以下账号不存在: {', '.join(map(str, missing_ids))}")
+    return teams
+
+
+async def _sync_competition_slots(
+    db: AsyncSession,
+    competition_id: int,
+    teams: list[Team],
+) -> None:
+    slot_rows = await db.execute(
+        select(CompetitionSlot).where(CompetitionSlot.competition_id == competition_id)
+    )
+    existing_slots = {
+        slot.team_id: slot
+        for slot in slot_rows.scalars().all()
+    }
+    desired_team_ids = {team.id for team in teams}
+
+    for team in teams:
+        if team.id in existing_slots:
+            continue
+        db.add(
+            CompetitionSlot(
+                competition_id=competition_id,
+                team_id=team.id,
+                selected_submission_id=None,
+            )
+        )
+
+    for slot in existing_slots.values():
+        if slot.team_id in desired_team_ids:
+            continue
+        await db.delete(slot)
 
 
 async def _load_slots(db: AsyncSession, competition: Competition) -> list[CompetitionSlotOut]:
@@ -159,14 +203,7 @@ async def create_competition(
     if body.submission_deadline is not None and body.submission_deadline > body.scheduled_at:
         raise HTTPException(status_code=400, detail="提交截止时间不能晚于赛事开始时间")
 
-    team_rows = await db.execute(
-        select(Team).where(Team.id.in_(body.eligible_team_ids)).order_by(Team.id.asc())
-    )
-    teams = team_rows.scalars().all()
-    found_ids = {team.id for team in teams}
-    missing_ids = [team_id for team_id in body.eligible_team_ids if team_id not in found_ids]
-    if missing_ids:
-        raise HTTPException(status_code=400, detail=f"以下账号不存在: {', '.join(map(str, missing_ids))}")
+    teams = await _resolve_eligible_teams(db, body.eligible_team_ids)
 
     competition = Competition(
         name=body.name.strip(),
@@ -181,14 +218,30 @@ async def create_competition(
     db.add(competition)
     await db.flush()
 
-    db.add_all([
-        CompetitionSlot(
-            competition_id=competition.id,
-            team_id=team.id,
-            selected_submission_id=None,
-        )
-        for team in teams
-    ])
+    await _sync_competition_slots(db, competition.id, teams)
+    await db.commit()
+
+    competition = await _get_competition_or_404(db, competition.id)
+    return await _serialize_competition(db, competition, actor, include_slots=True)
+
+
+@router.put(
+    "/admin/{competition_id}/eligible-teams",
+    response_model=CompetitionDetailOut,
+    dependencies=[Depends(require_admin)],
+)
+async def update_competition_eligible_teams(
+    competition_id: int,
+    body: CompetitionEligibleTeamsUpdateRequest,
+    actor: AuthActor = Depends(get_current_actor),
+    db: AsyncSession = Depends(get_db),
+):
+    competition = await _get_competition_or_404(db, competition_id)
+    if competition.status != "scheduled":
+        raise HTTPException(status_code=400, detail="只有待开始赛事可以修改可参赛账号")
+
+    teams = await _resolve_eligible_teams(db, body.eligible_team_ids)
+    await _sync_competition_slots(db, competition.id, teams)
     await db.commit()
 
     competition = await _get_competition_or_404(db, competition.id)
