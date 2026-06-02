@@ -48,6 +48,19 @@
 - `markPriceDepthLevels = 3`
 - `markPriceMinLevelQuantity = 20`
 - `markPriceMinOrderAgeTicks = 1`
+- `markPriceMaxDeviationRatioFromLastPrice = 0.30`
+- `safePriceMaxDailyMoveRatio = 0.15`
+- `maxOrderPriceDeviationRatioFromSafePrice = 0.30`
+- `researchMaxAbsRewardPerReport = 100_000`
+- `researchPositiveRewardBudgetPerPlayerPerMonth = 200_000`
+- `systemInitialMora = 100_000_000`
+- `systemInitialGold = 100_000`
+- `systemMaxNetBuyQuantityPerDay = 200`
+- `systemMaxNetSellQuantityPerDay = 200`
+- `systemMaxGrossTradeQuantityPerDay = 300`
+- `circuitBreakerEnabled = true`
+- `circuitBreakerTriggerRatio = 0.25`
+- `circuitBreakerDurationTicks = 2`
 - `initialLiquidityLevels = 8`
 - `initialLiquidityBaseQuantity = 60`
 - `initialLiquidityQuantityStep = 10`
@@ -149,6 +162,7 @@
 - 新闻是在 NPC 当天下单之前发布的。
 - NPC 的 0 延迟订单会在当天参与撮合。
 - 玩家订单是否算“即时单”或“挂单”，是在**到达日**第 6 步里判定，不是在提交时判定。
+- 若熔断已经处于激活状态，则当天会跳过第 5 步和第 6 步：NPC 不会发新单，所有到达订单也不会被处理，而是继续留到之后的非熔断日再处理。
 
 ## 5. 账户、订单与撮合规则
 
@@ -171,9 +185,12 @@
 
 订单仅在 `TradingDay` 阶段接收，并且提交时必须满足：
 
+- 当前不处于熔断状态
 - 价格 `price > 0`
 - 数量 `quantity > 0`
 - 买单名义金额 `price * quantity` 不得溢出 `Int64`
+- 订单价格必须落在当前 `SafePrice` 的动态价格带内
+  - 当前默认参数下，允许区间是 `SafePrice * [0.7, 1.3]`
 - 买单时，账户可用摩拉必须至少覆盖：
   - `price * quantity`
   - 加上预留手续费 `ceil(price * quantity * feeRate)`
@@ -358,33 +375,62 @@
 - 止损名刀激活时记录的参考价格
 - 观战页面的盘面展示
 
-### 6.3 内部用于结算和研报的价格口径：MarkPrice
+### 6.3 内部价格链路：MarkPrice -> SafePrice -> SettlementPrice
 
-月结和研报**不直接使用 MidPrice**。
+月结和研报**不直接使用 MidPrice**。当前内部价格口径分成三层：
 
-系统每天会记录一个内部 `MarkPrice` 历史，计算规则如下：
+1. `MarkPrice`：根据盘口算出来的原始内部价格
+2. `SafePrice`：对 `MarkPrice` 再做单日涨跌约束后的安全价格
+3. `SettlementPrice`：最终真正用于月结和研报的价格
 
-1. 只看订单簿中“够老”的挂单：
+### 6.4 MarkPrice 的计算规则
+
+系统每天会先尝试从订单簿中计算一个原始 `MarkPrice`。参与计算的挂单必须同时满足：
+
+1. 挂单足够“老”：
    - `currentTick - arrivalTick >= markPriceMinOrderAgeTicks`
    - 当前有效默认值为 `1`
-2. 同时要求单档聚合后的量达到阈值：
+2. 单档聚合后的量达到阈值：
    - `levelQty >= markPriceMinLevelQuantity`
    - 当前有效默认值为 `20`
-3. 分别取买盘和卖盘前 `markPriceDepthLevels` 档：
+3. 挂单价格没有相对 `LastPrice` 离群：
+   - 当前有效默认值 `markPriceMaxDeviationRatioFromLastPrice = 0.30`
+   - 即只纳入位于 `LastPrice * [0.7, 1.3]` 区间内的挂单
+
+之后：
+
+1. 分别取买盘和卖盘前 `markPriceDepthLevels` 档
    - 当前有效默认值为 `3`
-4. 分别求买盘和卖盘的加权平均价
-5. `MarkPrice = ceil((weightedBid + weightedAsk) / 2)`
+2. 分别求买盘和卖盘的加权平均价
+3. `MarkPrice = ceil((weightedBid + weightedAsk) / 2)`
 
-若当天无法算出合法 `MarkPrice`，则回退：
+若当天无法算出合法 `MarkPrice`，则本次计算直接回退到“前一日 `SafePrice`”；在初始化时刻若连这个都没有，则使用 `initialGoldPrice`。
 
-- 优先使用前一天已经记录的 `MarkPrice`
-- 若连前一天都没有，则回退到当时的 `MidPrice`
+这意味着：
 
-### 6.4 真正用于结算的价格口径：SettlementPrice(TWAP)
+- 仅仅把盘口里挂出非常离谱的高价/低价单，并不保证它能污染 `MarkPrice`
+- 即使该单真实存在于盘口里，只要它相对 `LastPrice` 偏离过大，也会被排除在内部价格计算之外
 
-系统真正用于月结和研报结算的价格是：
+### 6.5 SafePrice 的计算规则
 
-`SettlementPriceAtTick(t) = 最近 settlementTwapWindowTicks 个记录点的 MarkPrice 平均值`
+算出原始 `MarkPrice` 后，服务器还会再记录一条 `SafePrice` 历史：
+
+- 若当前不在熔断中：
+  - `SafePrice` 会把原始 `MarkPrice` 再限制在“前一日 `SafePrice`”附近
+  - 当前有效默认值 `safePriceMaxDailyMoveRatio = 0.15`
+  - 即每天最多只允许相对前一日 `SafePrice` 上下波动 `15%`
+- 若当前已经处于熔断中：
+  - 当天 `SafePrice` 会直接冻结为前一日 `SafePrice`
+
+因此当前版本里，即便原始盘口和原始 `MarkPrice` 想剧烈跳变，真正进入内部价格历史的 `SafePrice` 仍然会被限速。
+
+### 6.6 真正用于结算的价格口径：SettlementPrice
+
+当前 `SettlementPriceAtTick(t)` 的优先级是：
+
+1. 先看最近 `settlementTwapWindowTicks` 个记录点内是否有真实成交
+2. 如果有成交，则优先使用这段窗口内的**成交价 TWAP**
+3. 如果完全没有成交，再回退为这段窗口内的 **SafePrice TWAP**
 
 当前有效默认值：
 
@@ -392,14 +438,36 @@
 
 也就是说：
 
-- 月末结算时，使用的是最后 5 个交易日记录下来的 `MarkPrice` 的均值
-- 研报在新闻发布日和结算日使用的，也都是各自那个时点向前看的短窗 TWAP
+- 月末结算时，优先使用最后 5 个交易日内的成交价 TWAP
+- 研报在新闻发布日和结算日使用的，也都是各自那个时点向前看的同一套 `SettlementPriceAtTick`
+- 只有在该窗口完全没有成交时，才会退回到 `SafePrice` 的短窗平均
 
 如果窗口左端越过了 `tick 0`，就会截断到 `tick 0`。因此：
 
-- 第 1 条新闻（第 1 天）的研报结算会把初始化时刻 `tick 0` 的价格也纳入 TWAP
+- 第 1 条新闻（第 1 天）的研报结算，仍可能把初始化时刻 `tick 0` 的内部价格纳入回退口径
 
-### 6.5 一个非常重要的调试提醒
+### 6.7 熔断机制
+
+当前版本带有交易熔断：
+
+- `circuitBreakerEnabled = true`
+- `circuitBreakerTriggerRatio = 0.25`
+- `circuitBreakerDurationTicks = 2`
+
+触发规则：
+
+- 若某一天算出的原始 `MarkPrice` 相对“前一日 `SafePrice`”偏离至少 `25%`
+- 则从后续开始进入熔断，持续 `2` 个交易日
+
+熔断激活时：
+
+- 玩家新的买卖单会在提交入口直接被拒绝
+- NPC 不会发新单
+- 当天不会处理任何到达订单
+- `SafePrice` 会冻结不动
+- 撤单接口仍然可用
+
+### 6.8 一个非常重要的调试提醒
 
 当前玩家能实时看到的是 `MidPrice`，但：
 
@@ -407,9 +475,9 @@
 - 研报奖惩
 - 真正的内部价格历史
 
-都使用 `MarkPrice -> TWAP` 这一套内部口径。
+都使用 `MarkPrice -> SafePrice -> SettlementPrice` 这一套内部口径。
 
-因此，“把卖一/买一做出一个很夸张的瞬时中间价”不等于“你已经改掉了结算价”。
+因此，“把卖一/买一做出一个很夸张的瞬时中间价”不等于“你已经改掉了结算价”；当前版本里，离群盘口过滤、`SafePrice` 限速和成交优先的结算价都会继续削弱这种操纵。
 
 ## 7. NPC 下单逻辑
 
@@ -499,13 +567,36 @@ NPC 只读取：
 
 ### 7.6 NPC 的资金与库存约束
 
-当前 `SYSTEM` 账户没有真实资产约束：
+当前版本中，`SYSTEM` 已经有真实资产约束和日内流量约束。
 
-- 它可以一直挂买单
-- 也可以一直挂卖单
-- 不受摩拉和黄金余额限制
+月初初始值默认是：
 
-这仍然是当前机制里的一个重要特征。
+- `systemInitialMora = 100_000_000`
+- `systemInitialGold = 100_000`
+
+因此：
+
+- `SYSTEM` 挂买单时，必须有足够摩拉可冻结
+- `SYSTEM` 挂卖单时，必须有足够黄金可冻结
+- 初始盘口本身也会真实消耗 `SYSTEM` 的冻结资产
+- NPC 后续每天生成的系统订单，同样要受这些资产约束
+
+此外，`SYSTEM` 与玩家成交时还有日内限制：
+
+- `systemMaxNetBuyQuantityPerDay = 200`
+- `systemMaxNetSellQuantityPerDay = 200`
+- `systemMaxGrossTradeQuantityPerDay = 300`
+
+这些限制的含义是：
+
+- 当天 `SYSTEM` 向玩家净买入的总量最多 `200`
+- 当天 `SYSTEM` 向玩家净卖出的总量最多 `200`
+- 当天 `SYSTEM` 与玩家成交的总量最多 `300`
+
+一旦某个限制被打满：
+
+- 之后当天继续想和 `SYSTEM` 成交的订单，会因为可成交量为 `0` 而被挡住
+- 若阻塞点正好是某张 `SYSTEM` 挂单，则那张系统挂单会被自动撤掉
 
 ## 8. 新闻系统
 
@@ -596,7 +687,12 @@ NPC 只读取：
 - `priceAtSettlement = SettlementPriceAtTick(news.PublishTick + 3)`
 - `actualChange = priceAtSettlement - priceAtPublish`
 
-也就是说，研报结算用的是**两个 TWAP 的差值**，而不是两天的瞬时 `MidPrice` 差值。
+也就是说，研报结算用的是**两个内部结算价的差值**，而不是两天的瞬时 `MidPrice` 差值。
+
+注意这里的 `SettlementPriceAtTick` 当前优先使用：
+
+- 近窗成交价 TWAP
+- 若窗口没有成交，再回退到 `SafePrice` TWAP
 
 ### 9.5 正确性判定
 
@@ -625,12 +721,14 @@ NPC 只读取：
 
 奖励绝对值公式：
 
-`rewardMagnitude = baseResearchReward * rankMultiplier * abs(actualChange)`
+`rewardMagnitude = floor(baseResearchReward * rankMultiplier * abs(actualChange) / max(1, priceAtPublish))`
 
 其中：
 
 - `baseResearchReward = 10_000`
 - `rankMultiplier = max(1, 报告总数 - 当前排序位置)`
+- 当前单份研报奖励绝对值上限：`researchMaxAbsRewardPerReport = 100_000`
+- 当前每位玩家每月“正向研报收益预算”上限：`researchPositiveRewardBudgetPerPlayerPerMonth = 200_000`
 
 举例：
 
@@ -640,8 +738,14 @@ NPC 只读取：
 
 最终：
 
-- 预测正确：`+rewardMagnitude`
+- 预测正确：先算出 `rewardMagnitude`，再受“单玩家单月正收益预算”约束
 - 预测错误：`-rewardMagnitude`
+
+这意味着：
+
+- 当前版本中的研报奖励已经不再随绝对价差线性爆炸
+- 即使结算价涨很多，研报奖励也会先除以 `priceAtPublish`
+- 单份研报和单月累计正收益都还有额外上限
 
 若玩家摩拉不够支付负奖励，则实际只会扣到 `0` 为止，不会出现负摩拉。
 
@@ -864,7 +968,10 @@ NPC 只读取：
 
 `NAV = Mora + FrozenMora + (Gold + FrozenGold + LockedGold) * settlementPrice`
 
-其中 `settlementPrice` 不是公开 `MidPrice`，而是第 30 天对应的 `SettlementPriceAtTick(30)`，即内部 `MarkPrice` 历史上的短窗 TWAP。
+其中 `settlementPrice` 不是公开 `MidPrice`，而是第 30 天对应的 `SettlementPriceAtTick(30)`。当前实现下：
+
+- 若结算窗口内有成交，则优先使用成交价 TWAP
+- 若窗口内没有成交，则回退到 `SafePrice` TWAP
 
 若玩家在止损名刀保护中，则上述价格会先经过保护折算再用于 `CalculateNAV`。
 
@@ -909,9 +1016,14 @@ NPC 只读取：
 - 今天提交的默认延迟订单，明天才到达。
 - 是否算即时单，是到达时看盘口，不是提交时看盘口。
 - 提交上限和到达上限是两套不同限制。
+- 玩家下单价格还要落在当前 `SafePrice` 的动态价格带内，离谱价格会在提交入口直接失败。
 - `FlashTrading` 增加的是“即时单到达额度”，不是“总提交次数”。
-- `MidPrice` 只是公开展示口径；真正决定研报和月结的是内部 `MarkPrice + TWAP`。
+- `MidPrice` 只是公开展示口径；真正决定研报和月结的是内部 `MarkPrice -> SafePrice -> SettlementPrice`。
+- `SettlementPrice` 当前优先使用成交价 TWAP；只有没有成交时才回退到 `SafePrice` TWAP。
+- 离群盘口即使能进入公开盘口显示，也不一定能进入 `MarkPrice`。
+- 熔断激活时，当天会直接冻结撮合流程；不是只有“禁止新单”，连到达订单也会延期处理。
 - 当前 `newsIntervalMin/Max` 根本不生效，新闻只看固定日程 `[1, 11, 21]`。
 - `舆情打击` 不会推 NPC，只会骗人。
 - `Hold` 研报当前不能拿正收益。
+- 研报奖励现在按收益率口径计算，并且受单份上限和单月正收益预算上限控制。
 - 正式决赛不会沿用当前这组公开新闻文案，不能把策略写死在固定句子匹配上。

@@ -12,6 +12,7 @@ public class OrderBook
     private readonly int _markPriceDepthLevels;
     private readonly int _markPriceMinLevelQuantity;
     private readonly int _markPriceMinOrderAgeTicks;
+    private readonly double _markPriceMaxDeviationRatioFromLastPrice;
 
     // Bids: highest price first, then lower priority rank, then earliest arrival.
     // SortedSet.Min returns the first element per the comparer, which is the best bid.
@@ -57,12 +58,14 @@ public class OrderBook
         long initialPrice,
         int markPriceDepthLevels = 3,
         int markPriceMinLevelQuantity = 20,
-        int markPriceMinOrderAgeTicks = 1)
+        int markPriceMinOrderAgeTicks = 1,
+        double markPriceMaxDeviationRatioFromLastPrice = 0.30)
     {
         LastPrice = initialPrice;
         _markPriceDepthLevels = Math.Max(1, markPriceDepthLevels);
         _markPriceMinLevelQuantity = Math.Max(1, markPriceMinLevelQuantity);
         _markPriceMinOrderAgeTicks = Math.Max(0, markPriceMinOrderAgeTicks);
+        _markPriceMaxDeviationRatioFromLastPrice = Math.Max(0, markPriceMaxDeviationRatioFromLastPrice);
 
         _bids = new SortedSet<Order>(Comparer<Order>.Create((a, b) =>
         {
@@ -238,7 +241,20 @@ public class OrderBook
     private bool IsEligibleForMarkPrice(Order order, int currentTick)
     {
         return order.RemainingQuantity > 0
-            && currentTick - order.ArrivalTick >= _markPriceMinOrderAgeTicks;
+            && currentTick - order.ArrivalTick >= _markPriceMinOrderAgeTicks
+            && IsWithinMarkPriceBand(order.Price);
+    }
+
+    private bool IsWithinMarkPriceBand(long price)
+    {
+        if (_markPriceMaxDeviationRatioFromLastPrice <= 0)
+            return true;
+
+        long referencePrice = Math.Max(1, LastPrice);
+        decimal ratio = Math.Max(0m, (decimal)_markPriceMaxDeviationRatioFromLastPrice);
+        long lowerBound = ClampPositiveDecimal(decimal.Floor(referencePrice * (1m - ratio)));
+        long upperBound = ClampPositiveDecimal(decimal.Ceiling(referencePrice * (1m + ratio)));
+        return price >= lowerBound && price <= upperBound;
     }
 
     private static long WeightedAverage(IReadOnlyList<(long Price, int Quantity)> levels)
@@ -264,6 +280,15 @@ public class OrderBook
             return long.MaxValue;
         if (value < long.MinValue)
             return long.MinValue;
+        return (long)value;
+    }
+
+    private static long ClampPositiveDecimal(decimal value)
+    {
+        if (value < 1)
+            return 1;
+        if (value > long.MaxValue)
+            return long.MaxValue;
         return (long)value;
     }
 

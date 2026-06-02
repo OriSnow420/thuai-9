@@ -137,8 +137,29 @@ public record GameSettings
     [JsonPropertyName("baseResearchReward")]
     public long BaseResearchReward { get; init; } = 10000;
 
+    [JsonPropertyName("researchMaxAbsRewardPerReport")]
+    public long ResearchMaxAbsRewardPerReport { get; init; } = 100000;
+
+    [JsonPropertyName("researchPositiveRewardBudgetPerPlayerPerMonth")]
+    public long ResearchPositiveRewardBudgetPerPlayerPerMonth { get; init; } = 200000;
+
     [JsonPropertyName("npcOrdersPerTick")]
     public int NpcOrdersPerTick { get; init; } = 3;
+
+    [JsonPropertyName("systemInitialMora")]
+    public long SystemInitialMora { get; init; } = 100000000;
+
+    [JsonPropertyName("systemInitialGold")]
+    public long SystemInitialGold { get; init; } = 100000;
+
+    [JsonPropertyName("systemMaxNetBuyQuantityPerDay")]
+    public int SystemMaxNetBuyQuantityPerDay { get; init; } = 200;
+
+    [JsonPropertyName("systemMaxNetSellQuantityPerDay")]
+    public int SystemMaxNetSellQuantityPerDay { get; init; } = 200;
+
+    [JsonPropertyName("systemMaxGrossTradeQuantityPerDay")]
+    public int SystemMaxGrossTradeQuantityPerDay { get; init; } = 300;
 
     [JsonPropertyName("newsSentimentDurationTicks")]
     public int NewsSentimentDurationTicks { get; init; } = 3;
@@ -157,6 +178,24 @@ public record GameSettings
 
     [JsonPropertyName("markPriceMinOrderAgeTicks")]
     public int MarkPriceMinOrderAgeTicks { get; init; } = 1;
+
+    [JsonPropertyName("markPriceMaxDeviationRatioFromLastPrice")]
+    public double MarkPriceMaxDeviationRatioFromLastPrice { get; init; } = 0.30;
+
+    [JsonPropertyName("safePriceMaxDailyMoveRatio")]
+    public double SafePriceMaxDailyMoveRatio { get; init; } = 0.15;
+
+    [JsonPropertyName("maxOrderPriceDeviationRatioFromSafePrice")]
+    public double MaxOrderPriceDeviationRatioFromSafePrice { get; init; } = 0.30;
+
+    [JsonPropertyName("circuitBreakerEnabled")]
+    public bool CircuitBreakerEnabled { get; init; } = true;
+
+    [JsonPropertyName("circuitBreakerTriggerRatio")]
+    public double CircuitBreakerTriggerRatio { get; init; } = 0.25;
+
+    [JsonPropertyName("circuitBreakerDurationTicks")]
+    public int CircuitBreakerDurationTicks { get; init; } = 2;
 
     [JsonPropertyName("initialLiquidityLevels")]
     public int InitialLiquidityLevels { get; init; } = 8;

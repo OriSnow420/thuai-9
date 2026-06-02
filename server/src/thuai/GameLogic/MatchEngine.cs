@@ -1,3 +1,4 @@
+using System.Numerics;
 using Thuai.GameLogic.StrategyCards;
 
 namespace Thuai.GameLogic;
@@ -10,16 +11,40 @@ public class MatchEngine
     private readonly Dictionary<string, Player> _players;
     private readonly List<Order> _pendingOrders = new();
     private readonly List<Trade> _tradesThisDay = new();
+    private readonly int _systemMaxNetBuyQuantityPerDay;
+    private readonly int _systemMaxNetSellQuantityPerDay;
+    private readonly int _systemMaxGrossTradeQuantityPerDay;
+
+    private long _systemMora;
+    private long _systemFrozenMora;
+    private long _systemGold;
+    private long _systemFrozenGold;
+    private int _systemFlowDay = int.MinValue;
+    private int _systemNetBuyQuantityThisDay;
+    private int _systemNetSellQuantityThisDay;
+    private int _systemGrossTradeQuantityThisDay;
 
     public event Action<Trade>? OnTradeExecuted;
 
     public OrderBook OrderBook => _orderBook;
     public IReadOnlyList<Order> PendingOrders => _pendingOrders;
 
-    public MatchEngine(OrderBook orderBook, Dictionary<string, Player> players)
+    public MatchEngine(
+        OrderBook orderBook,
+        Dictionary<string, Player> players,
+        long systemInitialMora = 100_000_000,
+        long systemInitialGold = 100_000,
+        int systemMaxNetBuyQuantityPerDay = 200,
+        int systemMaxNetSellQuantityPerDay = 200,
+        int systemMaxGrossTradeQuantityPerDay = 300)
     {
         _orderBook = orderBook;
         _players = players;
+        _systemMora = Math.Max(0, systemInitialMora);
+        _systemGold = Math.Max(0, systemInitialGold);
+        _systemMaxNetBuyQuantityPerDay = Math.Max(0, systemMaxNetBuyQuantityPerDay);
+        _systemMaxNetSellQuantityPerDay = Math.Max(0, systemMaxNetSellQuantityPerDay);
+        _systemMaxGrossTradeQuantityPerDay = Math.Max(0, systemMaxGrossTradeQuantityPerDay);
     }
 
     public Order? SubmitOrder(string playerToken, OrderSide side, long price, int quantity,
@@ -60,6 +85,10 @@ public class MatchEngine
                 player.FreezeGold(quantity);
             }
         }
+        else if (!TryReserveSystemAssets(side, price, quantity))
+        {
+            return null;
+        }
 
         var order = new Order(playerToken, side, price, quantity, currentTick, networkDelay, priorityRank, isIceberg)
         {
@@ -98,6 +127,7 @@ public class MatchEngine
     public List<Trade> ProcessDay(int currentDay)
     {
         _tradesThisDay.Clear();
+        ResetSystemFlowCountersIfNeeded(currentDay);
 
         var arrived = _pendingOrders
             .Where(order => order.ArrivalTick <= currentDay)
@@ -163,6 +193,19 @@ public class MatchEngine
 
             long tradePrice = opposite.Price;
             int tradeQuantity = Math.Min(order.RemainingQuantity, opposite.RemainingQuantity);
+            int allowedQuantity = GetAllowedTradeQuantity(order, opposite, tradeQuantity, currentDay);
+            if (allowedQuantity <= 0)
+            {
+                if (opposite.PlayerToken == SystemToken)
+                {
+                    CancelActiveOrder(opposite);
+                    continue;
+                }
+
+                break;
+            }
+
+            tradeQuantity = allowedQuantity;
             ExecuteTrade(order, opposite, tradePrice, tradeQuantity, currentDay);
         }
 
@@ -218,13 +261,10 @@ public class MatchEngine
         else
             ApplySellerFill(taker, price, quantity, sellerFee);
 
-        if (maker.PlayerToken != SystemToken && _players.TryGetValue(maker.PlayerToken, out var makerPlayer))
-        {
-            if (maker.Side == OrderSide.Buy)
-                ApplyBuyerFill(maker, price, quantity, buyerFee);
-            else
-                ApplySellerFill(maker, price, quantity, sellerFee);
-        }
+        if (maker.Side == OrderSide.Buy)
+            ApplyBuyerFill(maker, price, quantity, buyerFee);
+        else
+            ApplySellerFill(maker, price, quantity, sellerFee);
 
         if (taker.PlayerToken != maker.PlayerToken)
         {
@@ -250,6 +290,8 @@ public class MatchEngine
             SellerFee = sellerFee
         };
 
+        RecordSystemTradeFlow(trade.BuyerToken, trade.SellerToken, quantity, currentDay);
+
         _tradesThisDay.Add(trade);
         OnTradeExecuted?.Invoke(trade);
     }
@@ -267,14 +309,23 @@ public class MatchEngine
 
     private void ApplyBuyerFill(Order order, long price, int quantity, long fee)
     {
+        long pricePortion = order.Price * quantity;
+        long tradeAmount = price * quantity;
+
         if (order.PlayerToken == SystemToken)
+        {
+            SpendSystemFrozenMora(tradeAmount);
+            long systemPriceRefund = pricePortion - tradeAmount;
+            if (systemPriceRefund > 0)
+                UnfreezeSystemMora(systemPriceRefund);
+
+            AddSystemGold(quantity);
             return;
+        }
 
         if (!_players.TryGetValue(order.PlayerToken, out var player))
             return;
 
-        long pricePortion = order.Price * quantity;
-        long tradeAmount = price * quantity;
         long feeFromBuffer = Math.Min(fee, order.FrozenFeeRemaining);
 
         player.SpendFrozenMora(tradeAmount + feeFromBuffer);
@@ -304,7 +355,13 @@ public class MatchEngine
     private void ApplySellerFill(Order order, long price, int quantity, long fee)
     {
         if (order.PlayerToken == SystemToken)
+        {
+            SpendSystemFrozenGold(quantity);
+            long systemProceeds = price * quantity;
+            if (systemProceeds > 0)
+                AddSystemMora(systemProceeds);
             return;
+        }
 
         if (!_players.TryGetValue(order.PlayerToken, out var player))
             return;
@@ -318,7 +375,19 @@ public class MatchEngine
     private void RefundPendingOrder(Order order)
     {
         if (order.PlayerToken == SystemToken)
+        {
+            if (order.Side == OrderSide.Buy)
+            {
+                long refund = order.Price * order.RemainingQuantity;
+                if (refund > 0)
+                    UnfreezeSystemMora(refund);
+            }
+            else if (order.RemainingQuantity > 0)
+            {
+                UnfreezeSystemGold(order.RemainingQuantity);
+            }
             return;
+        }
 
         if (!_players.TryGetValue(order.PlayerToken, out var player))
             return;
@@ -343,9 +412,137 @@ public class MatchEngine
 
     private void RefundUnfilledImmediate(Order order)
     {
-        if (order.PlayerToken == SystemToken || order.RemainingQuantity <= 0)
+        if (order.RemainingQuantity <= 0)
             return;
 
         RefundPendingOrder(order);
+    }
+
+    private bool TryReserveSystemAssets(OrderSide side, long price, int quantity)
+    {
+        if (side == OrderSide.Buy)
+        {
+            long notional = price * quantity;
+            if (_systemMora < notional)
+                return false;
+
+            _systemMora -= notional;
+            _systemFrozenMora += notional;
+            return true;
+        }
+
+        if (_systemGold < quantity)
+            return false;
+
+        _systemGold -= quantity;
+        _systemFrozenGold += quantity;
+        return true;
+    }
+
+    private int GetAllowedTradeQuantity(Order taker, Order maker, int requestedQuantity, int currentDay)
+    {
+        ResetSystemFlowCountersIfNeeded(currentDay);
+
+        string buyerToken = taker.Side == OrderSide.Buy ? taker.PlayerToken : maker.PlayerToken;
+        string sellerToken = taker.Side == OrderSide.Sell ? taker.PlayerToken : maker.PlayerToken;
+        if (buyerToken != SystemToken && sellerToken != SystemToken)
+            return requestedQuantity;
+
+        int allowedQuantity = requestedQuantity;
+        if (_systemMaxGrossTradeQuantityPerDay > 0)
+        {
+            allowedQuantity = Math.Min(
+                allowedQuantity,
+                Math.Max(0, _systemMaxGrossTradeQuantityPerDay - _systemGrossTradeQuantityThisDay));
+        }
+
+        if (buyerToken == SystemToken && _systemMaxNetBuyQuantityPerDay > 0)
+        {
+            allowedQuantity = Math.Min(
+                allowedQuantity,
+                Math.Max(0, _systemMaxNetBuyQuantityPerDay - _systemNetBuyQuantityThisDay));
+        }
+
+        if (sellerToken == SystemToken && _systemMaxNetSellQuantityPerDay > 0)
+        {
+            allowedQuantity = Math.Min(
+                allowedQuantity,
+                Math.Max(0, _systemMaxNetSellQuantityPerDay - _systemNetSellQuantityThisDay));
+        }
+
+        return allowedQuantity;
+    }
+
+    private void RecordSystemTradeFlow(string buyerToken, string sellerToken, int quantity, int currentDay)
+    {
+        ResetSystemFlowCountersIfNeeded(currentDay);
+
+        if (buyerToken != SystemToken && sellerToken != SystemToken)
+            return;
+
+        _systemGrossTradeQuantityThisDay += quantity;
+        if (buyerToken == SystemToken)
+            _systemNetBuyQuantityThisDay += quantity;
+        if (sellerToken == SystemToken)
+            _systemNetSellQuantityThisDay += quantity;
+    }
+
+    private void ResetSystemFlowCountersIfNeeded(int currentDay)
+    {
+        if (_systemFlowDay == currentDay)
+            return;
+
+        _systemFlowDay = currentDay;
+        _systemNetBuyQuantityThisDay = 0;
+        _systemNetSellQuantityThisDay = 0;
+        _systemGrossTradeQuantityThisDay = 0;
+    }
+
+    private void CancelActiveOrder(Order order)
+    {
+        RefundActiveOrder(order);
+        order.Status = OrderStatus.Cancelled;
+        _orderBook.RemoveOrder(order.OrderId);
+    }
+
+    private void SpendSystemFrozenMora(long amount)
+    {
+        _systemFrozenMora -= amount;
+    }
+
+    private void UnfreezeSystemMora(long amount)
+    {
+        _systemFrozenMora -= amount;
+        AddSystemMora(amount);
+    }
+
+    private void AddSystemMora(long amount)
+    {
+        _systemMora = ClampToInt64((BigInteger)_systemMora + amount);
+    }
+
+    private void SpendSystemFrozenGold(int amount)
+    {
+        _systemFrozenGold -= amount;
+    }
+
+    private void UnfreezeSystemGold(int amount)
+    {
+        _systemFrozenGold -= amount;
+        AddSystemGold(amount);
+    }
+
+    private void AddSystemGold(int amount)
+    {
+        _systemGold = ClampToInt64((BigInteger)_systemGold + amount);
+    }
+
+    private static long ClampToInt64(BigInteger value)
+    {
+        if (value > long.MaxValue)
+            return long.MaxValue;
+        if (value < long.MinValue)
+            return long.MinValue;
+        return (long)value;
     }
 }

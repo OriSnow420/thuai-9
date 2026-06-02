@@ -95,6 +95,20 @@ public class OrderBookTests
     }
 
     [Fact]
+    public void MarkPrice_IgnoresOutlierQuotesRelativeToLastPrice()
+    {
+        var outlierBid = new Order("p1", OrderSide.Buy, price: 1498, quantity: 50,
+            submitTick: 0, networkDelay: 0);
+        var outlierAsk = new Order("p2", OrderSide.Sell, price: 1502, quantity: 50,
+            submitTick: 0, networkDelay: 0);
+
+        _book.AddOrder(outlierBid);
+        _book.AddOrder(outlierAsk);
+
+        Assert.Equal(1000, _book.GetMarkPrice(currentTick: 1, fallbackPrice: 1000));
+    }
+
+    [Fact]
     public void RemoveOrder_ByOrderId_Succeeds()
     {
         var order = new Order("p1", OrderSide.Buy, price: 900, quantity: 10,
@@ -552,14 +566,49 @@ public class MatchEngineTests
     }
 
     [Fact]
-    public void SystemOrders_SkipAssetChecks()
+    public void SystemOrders_RespectSystemAssets()
     {
-        // SYSTEM token should bypass all validation (no player in _players dict)
-        var order = _engine.SubmitOrder("SYSTEM", OrderSide.Buy, price: 999999, quantity: 999999,
+        var richOrder = _engine.SubmitOrder("SYSTEM", OrderSide.Buy, price: 1000, quantity: 10,
             currentTick: 0);
+        Assert.NotNull(richOrder);
+        Assert.Equal("SYSTEM", richOrder.PlayerToken);
 
-        Assert.NotNull(order);
-        Assert.Equal("SYSTEM", order.PlayerToken);
+        var constrainedEngine = new MatchEngine(
+            new OrderBook(initialPrice: 1000),
+            new Dictionary<string, Player>(),
+            systemInitialMora: 100,
+            systemInitialGold: 2);
+
+        Assert.Null(constrainedEngine.SubmitOrder("SYSTEM", OrderSide.Buy, price: 101, quantity: 1, currentTick: 0));
+        Assert.Null(constrainedEngine.SubmitOrder("SYSTEM", OrderSide.Sell, price: 1000, quantity: 3, currentTick: 0));
+    }
+
+    [Fact]
+    public void SystemTradeFlowLimits_StopAdditionalSystemMatchesWithinSameDay()
+    {
+        var orderBook = new OrderBook(initialPrice: 1000);
+        var buyer = new Player("buyer", 0);
+        var engine = new MatchEngine(
+            orderBook,
+            new Dictionary<string, Player> { ["buyer"] = buyer },
+            systemInitialMora: 1_000_000,
+            systemInitialGold: 100,
+            systemMaxNetBuyQuantityPerDay: 5,
+            systemMaxNetSellQuantityPerDay: 5,
+            systemMaxGrossTradeQuantityPerDay: 5);
+
+        Assert.NotNull(engine.SubmitOrder("SYSTEM", OrderSide.Sell, price: 1000, quantity: 10, currentTick: 0));
+        Assert.Empty(engine.ProcessTick(0));
+
+        Assert.NotNull(engine.SubmitOrder("buyer", OrderSide.Buy, price: 1000, quantity: 10, currentTick: 0));
+        var firstTrades = engine.ProcessTick(0);
+        Assert.Single(firstTrades);
+        Assert.Equal(5, firstTrades[0].Quantity);
+
+        Assert.NotNull(engine.SubmitOrder("SYSTEM", OrderSide.Sell, price: 1000, quantity: 10, currentTick: 0));
+        Assert.NotNull(engine.SubmitOrder("buyer", OrderSide.Buy, price: 1000, quantity: 10, currentTick: 0));
+        var secondTrades = engine.ProcessTick(0);
+        Assert.Empty(secondTrades);
     }
 }
 

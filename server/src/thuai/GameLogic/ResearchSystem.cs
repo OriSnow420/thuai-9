@@ -8,16 +8,23 @@ public class ResearchSystem
     private readonly long _baseReward;
     private readonly int _researchWindow;
     private readonly int _settlementDelay;
+    private readonly long _maxAbsRewardPerReport;
+    private readonly long _positiveRewardBudgetPerPlayerPerMonth;
     private readonly List<ResearchReport> _pendingReports = new();
     private readonly List<ResearchReport> _settledReports = new();
+    private readonly Dictionary<string, long> _positiveRewardsByPlayer = new();
 
     public ResearchSystem(NewsSystem newsSystem, long baseReward = 10000,
-                          int researchWindow = 2, int settlementDelay = 3)
+                          int researchWindow = 2, int settlementDelay = 3,
+                          long maxAbsRewardPerReport = 100000,
+                          long positiveRewardBudgetPerPlayerPerMonth = 200000)
     {
         _newsSystem = newsSystem;
         _baseReward = baseReward;
         _researchWindow = researchWindow;
         _settlementDelay = settlementDelay;
+        _maxAbsRewardPerReport = Math.Max(0, maxAbsRewardPerReport);
+        _positiveRewardBudgetPerPlayerPerMonth = Math.Max(0, positiveRewardBudgetPerPlayerPerMonth);
     }
 
     public ResearchReport? SubmitReport(string playerToken, int newsId, Prediction prediction,
@@ -102,8 +109,10 @@ public class ResearchSystem
                 else
                 {
                     long rankMultiplier = Math.Max(1, ordered.Count - i);
-                    long rewardMagnitude = ClampToInt64((BigInteger)_baseReward * rankMultiplier * magnitude);
-                    report.Reward = isCorrect ? rewardMagnitude : -rewardMagnitude;
+                    long rewardMagnitude = CalculateRewardMagnitude(priceAtPublish, magnitude, rankMultiplier);
+                    report.Reward = isCorrect
+                        ? ApplyPositiveRewardBudget(report.PlayerToken, rewardMagnitude)
+                        : -rewardMagnitude;
                 }
 
                 _pendingReports.Remove(report);
@@ -128,6 +137,32 @@ public class ResearchSystem
     {
         _pendingReports.Clear();
         _settledReports.Clear();
+        _positiveRewardsByPlayer.Clear();
+    }
+
+    private long CalculateRewardMagnitude(long priceAtPublish, long magnitude, long rankMultiplier)
+    {
+        long referencePrice = Math.Max(1, priceAtPublish);
+        BigInteger scaledReward = (BigInteger)_baseReward * rankMultiplier * magnitude;
+        long rewardMagnitude = ClampToInt64(scaledReward / referencePrice);
+        if (_maxAbsRewardPerReport > 0)
+            rewardMagnitude = Math.Min(rewardMagnitude, _maxAbsRewardPerReport);
+        return Math.Max(0, rewardMagnitude);
+    }
+
+    private long ApplyPositiveRewardBudget(string playerToken, long rewardMagnitude)
+    {
+        if (rewardMagnitude <= 0)
+            return 0;
+
+        if (_positiveRewardBudgetPerPlayerPerMonth <= 0)
+            return rewardMagnitude;
+
+        long usedBudget = _positiveRewardsByPlayer.GetValueOrDefault(playerToken, 0);
+        long remainingBudget = Math.Max(0, _positiveRewardBudgetPerPlayerPerMonth - usedBudget);
+        long appliedReward = Math.Min(rewardMagnitude, remainingBudget);
+        _positiveRewardsByPlayer[playerToken] = usedBudget + appliedReward;
+        return appliedReward;
     }
 
     private static long ClampToInt64(BigInteger value)
