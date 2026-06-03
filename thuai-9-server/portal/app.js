@@ -1,6 +1,7 @@
 const state = {
   authMode: "login",
   workspaceTab: "code",
+  boardScope: "active",
   accessToken: localStorage.getItem("thuai9AccessToken") || "",
   gameToken: localStorage.getItem("thuai9GameToken") || "",
   currentUser: null,
@@ -48,6 +49,10 @@ document.querySelectorAll("[data-auth-tab]").forEach((button) => {
 
 document.querySelectorAll("[data-workspace-tab]").forEach((button) => {
   button.addEventListener("click", () => setWorkspaceTab(button.dataset.workspaceTab));
+});
+
+document.querySelectorAll("[data-board-scope]").forEach((button) => {
+  button.addEventListener("click", () => setBoardScope(button.dataset.boardScope));
 });
 
 document.getElementById("logoutButton")?.addEventListener("click", logout);
@@ -298,10 +303,20 @@ async function loadSubmissions() {
   }
 }
 
+function setBoardScope(scope) {
+  state.boardScope = scope === "all" ? "all" : "active";
+  document.querySelectorAll("[data-board-scope]").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.boardScope === state.boardScope);
+  });
+  loadLeaderboard();
+}
+
 async function loadLeaderboard() {
+  const scope = state.boardScope === "all" ? "all" : "active";
   try {
-    const entries = await requestJson("/api/leaderboard/");
-    renderLeaderboard(entries);
+    els.leaderboardBody.innerHTML = `<tr><td colspan="7">加载中...</td></tr>`;
+    const entries = await requestJson(`/api/leaderboard/?scope=${scope}`);
+    renderLeaderboard(entries, scope);
   } catch (error) {
     els.leaderboardBody.innerHTML = `<tr><td colspan="7">${escapeHtml(error.message)}</td></tr>`;
   }
@@ -984,9 +999,12 @@ async function submitCompetitionEligibilityUpdate(event, competitionId) {
   }
 }
 
-function renderLeaderboard(entries) {
+function renderLeaderboard(entries, scope = "active") {
   if (!Array.isArray(entries) || entries.length === 0) {
-    els.leaderboardBody.innerHTML = `<tr><td colspan="7">暂无对战数据。</td></tr>`;
+    const emptyMsg = scope === "active"
+      ? "暂无出战中的代码对战数据。"
+      : "暂无对战数据。";
+    els.leaderboardBody.innerHTML = `<tr><td colspan="7">${emptyMsg}</td></tr>`;
     return;
   }
 

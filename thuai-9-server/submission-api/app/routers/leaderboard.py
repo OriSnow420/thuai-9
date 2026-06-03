@@ -1,6 +1,7 @@
 from decimal import Decimal
+from enum import Enum
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,12 +13,28 @@ from app.score_utils import average_score_value, serialize_average_score, serial
 router = APIRouter()
 
 
+class LeaderboardScope(str, Enum):
+    # Every submission that has ever played a finished match.
+    all = "all"
+    # Only the submission each team currently has fielded (is_dispatched). This
+    # is exactly the set the evaluator auto-matches, so superseded iterations
+    # drop off the board and the current code can be judged on its own.
+    active = "active"
+
+
 @router.get("/", response_model=list[LeaderboardEntry])
-async def leaderboard(db: AsyncSession = Depends(get_db)):
-    submissions_result = await db.execute(
+async def leaderboard(
+    scope: LeaderboardScope = Query(LeaderboardScope.all),
+    db: AsyncSession = Depends(get_db),
+):
+    submission_query = (
         select(Submission.id, Submission.name, Team.name)
         .join(Team, Team.id == Submission.team_id)
     )
+    if scope is LeaderboardScope.active:
+        submission_query = submission_query.where(Submission.is_dispatched.is_(True))
+
+    submissions_result = await db.execute(submission_query)
     submissions = {
         row[0]: {
             "submission_name": row[1],
